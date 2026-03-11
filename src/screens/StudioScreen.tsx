@@ -1,8 +1,9 @@
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { RootStackParamList } from '../navigation/types';
+import { generateDraft } from '../api/alibiApi';
 import { useAppStore } from '../store/store';
 import type { StudioMode } from '../store/types';
 import { Button } from '../components/Button';
@@ -25,6 +26,7 @@ export function StudioScreen({ route, navigation }: Props) {
   const { state, dispatch } = useAppStore();
   const project = state.projects[projectId];
   const mode = (state.studio.modeByProjectId[projectId] ?? 'interview') as StudioMode;
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const sticky = useMemo(() => {
     const primaryLabel = mode === 'interview' ? 'Answer (placeholder)' : mode === 'draft' ? 'Generate' : 'Save';
@@ -36,21 +38,51 @@ export function StudioScreen({ route, navigation }: Props) {
         <View style={styles.stickyItem}>
           <Button
             label={primaryLabel}
+            disabled={mode === 'draft' ? isGenerating : false}
             onPress={() => {
               if (mode === 'draft') {
+                if (isGenerating) return;
+                setIsGenerating(true);
                 const draftId = makeId('draft');
-                dispatch({
-                  type: 'draft.create',
-                  payload: {
-                    draftId,
-                    projectId,
-                    entryIds: project?.entryIds ?? [],
-                    format: project?.type === 'book' ? 'book-chapter' : 'essay',
-                    title: project?.type === 'book' ? 'Chapter Draft' : 'Draft',
-                    content: '(Placeholder draft generated from selected canon + sources.)',
-                  },
-                });
-                navigation.navigate('Output', { draftId });
+                const format = project?.type === 'book' ? 'book-chapter' : 'essay';
+                const title = project?.type === 'book' ? 'Chapter Draft' : 'Draft';
+
+                const entries = (project?.entryIds ?? [])
+                  .map((id) => state.entries[id])
+                  .filter(Boolean)
+                  .slice(0, 12)
+                  .map((e) => ({
+                    title: e.title,
+                    transcript: e.transcript,
+                    highlights: e.highlights,
+                  }));
+
+                const canon =
+                  project?.type === 'book'
+                    ? (project.book?.canon ?? []).slice(0, 24).map((c) => ({ kind: c.kind, title: c.title, detail: c.detail }))
+                    : [];
+
+                generateDraft({
+                  projectName: project?.name ?? 'Untitled project',
+                  format,
+                  sources: entries,
+                  canon,
+                })
+                  .then((result) => {
+                    dispatch({
+                      type: 'draft.create',
+                      payload: {
+                        draftId,
+                        projectId,
+                        entryIds: project?.entryIds ?? [],
+                        format,
+                        title,
+                        content: result.ok ? result.content : '(Placeholder draft generated from selected canon + sources.)',
+                      },
+                    });
+                    navigation.navigate('Output', { draftId });
+                  })
+                  .finally(() => setIsGenerating(false));
               }
               if (mode === 'build' && project?.type === 'book') {
                 dispatch({
@@ -66,7 +98,7 @@ export function StudioScreen({ route, navigation }: Props) {
         </View>
       </View>
     );
-  }, [dispatch, mode, navigation, project?.entryIds, project?.type, projectId, state.drafts]);
+  }, [dispatch, isGenerating, mode, navigation, project?.book?.canon, project?.entryIds, project?.name, project?.type, projectId, state.entries]);
 
   if (!project) {
     return (

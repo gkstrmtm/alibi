@@ -1,0 +1,19 @@
+{
+  "root": true,
+  "extends": ["universe/native"],
+  "overrides": [
+    {
+      "files": ["**/*.{js,jsx,ts,tsx}"],
+      "rules": {
+        "prettier/prettier": "off"
+      }
+    },
+    {
+      "files": ["api/**/*.ts"],
+      "extends": ["universe/node"],
+      "rules": {
+        "prettier/prettier": "off"
+      }
+    }
+  ]
+}

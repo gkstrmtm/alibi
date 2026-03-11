@@ -25,6 +25,26 @@ If LAN is blocked by your network, `npx expo start --tunnel` can work — but it
 
 This repo currently focuses on the foundational app shell (navigation + screen hierarchy). Feature logic (recording, transcription, cloud processing, exports) is intentionally stubbed.
 
+## Vercel backend (AI gateway)
+
+This repo includes a minimal Vercel serverless API under `api/`.
+
+- Health check: `/api/health`
+- Draft generation (OpenAI): `/api/ai/draft`
+
+### Environment variables
+
+Copy `.env.example` for reference.
+
+- On Vercel (server-side secrets)
+	- `OPENAI_API_KEY` (required)
+	- `OPENAI_MODEL` (optional; default in code)
+
+- In Expo (client-side, non-secret)
+	- `EXPO_PUBLIC_API_BASE_URL` (your deployed Vercel URL, e.g. `https://your-project.vercel.app`)
+
+The Expo app reads `EXPO_PUBLIC_API_BASE_URL` and will call the Vercel endpoint from the Studio “Generate” action. If it’s missing or the call fails, the app falls back to placeholder draft content.
+
 ## Product docs
 
 - Foundation: [FOUNDATION.md](FOUNDATION.md)
