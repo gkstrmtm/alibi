@@ -46,6 +46,7 @@ function clip(text, max = 600) {
 
 async function main() {
   const healthUrl = `${baseUrl}/api/health`;
+  const extractUrl = `${baseUrl}/api/ai/extract`;
   const draftUrl = `${baseUrl}/api/ai/draft`;
 
   console.log(`Base URL: ${baseUrl}`);
@@ -56,6 +57,26 @@ async function main() {
     console.log(clip(health.text));
   } catch (e) {
     console.error(`\nGET /api/health failed: ${e?.message || e}`);
+  }
+
+  try {
+    const body = {
+      title: 'Smoke Test',
+      transcript: 'This is a raw note. I want to turn it into a clean draft later. The key idea is: keep it grounded.',
+      intent: 'Discussing an idea',
+      targetFormat: 'essay',
+    };
+
+    const extract = await fetchText(extractUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    console.log(`\nPOST /api/ai/extract -> ${extract.status}`);
+    console.log(clip(extract.text, 900));
+  } catch (e) {
+    console.error(`\nPOST /api/ai/extract failed: ${e?.message || e}`);
   }
 
   try {

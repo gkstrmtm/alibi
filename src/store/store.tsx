@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useMemo, useReducer } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, useContext, useEffect, useMemo, useReducer, useState } from 'react';
 
 import { makeId } from '../utils/id';
 import { makeSeedState } from './seed';
@@ -9,10 +10,15 @@ type AppStore = {
   dispatch: React.Dispatch<AppAction>;
 };
 
+const STORAGE_KEY = 'alibi.appState.v1';
+
 const AppStoreContext = createContext<AppStore | undefined>(undefined);
 
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
+    case 'app.hydrate': {
+      return action.payload.state;
+    }
     case 'entry.createText': {
       const id = makeId('entry');
       const now = Date.now();
@@ -281,6 +287,36 @@ function reducer(state: AppState, action: AppAction): AppState {
 
 export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, makeSeedState);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        if (!raw || cancelled) return;
+        const parsed = JSON.parse(raw) as AppState;
+        if (!parsed || typeof parsed !== 'object') return;
+        dispatch({ type: 'app.hydrate', payload: { state: parsed } });
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const t = setTimeout(() => {
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [hydrated, state]);
+
   const value = useMemo(() => ({ state, dispatch }), [state]);
   return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>;
 }

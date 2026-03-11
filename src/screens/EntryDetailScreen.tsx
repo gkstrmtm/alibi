@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { RootStackParamList } from '../navigation/types';
+import { extractEntry } from '../api/alibiApi';
 import { Button } from '../components/Button';
 import { ScreenLayout } from '../components/ScreenLayout';
 import { Section } from '../components/Section';
@@ -33,9 +34,11 @@ export function EntryDetailScreen({ route, navigation }: Props) {
   const entry = state.entries[entryId];
 
   const [ran, setRan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setRan(false);
+    setError(null);
   }, [entryId]);
 
   const canGenerate = entry?.status === 'extracted';
@@ -51,21 +54,58 @@ export function EntryDetailScreen({ route, navigation }: Props) {
             label={entry.status === 'captured' ? 'Digest & Extract' : 'Generate Draft'}
             onPress={() => {
               if (entry.status === 'captured') {
+                if (ran) return;
+                setError(null);
                 dispatch({ type: 'entry.setStatus', payload: { entryId: entry.id, status: 'processing' } });
                 setRan(true);
-                setTimeout(() => {
-                  const mock = makeMockExtraction(entry.title);
-                  dispatch({
-                    type: 'entry.setExtraction',
-                    payload: {
-                      entryId: entry.id,
-                      transcript: mock.transcript,
-                      highlights: mock.highlights,
-                      themes: mock.themes,
-                      ideas: mock.ideas,
-                    },
+                extractEntry({
+                  title: entry.title,
+                  transcript: entry.transcript ?? '',
+                  intent: entry.intent,
+                  targetFormat: entry.targetFormat,
+                })
+                  .then((result) => {
+                    if (!result.ok) {
+                      setError(result.error);
+                      const mock = makeMockExtraction(entry.title);
+                      dispatch({
+                        type: 'entry.setExtraction',
+                        payload: {
+                          entryId: entry.id,
+                          transcript: mock.transcript,
+                          highlights: mock.highlights,
+                          themes: mock.themes,
+                          ideas: mock.ideas,
+                        },
+                      });
+                      return;
+                    }
+
+                    dispatch({
+                      type: 'entry.setExtraction',
+                      payload: {
+                        entryId: entry.id,
+                        transcript: result.transcript,
+                        highlights: result.highlights,
+                        themes: result.themes,
+                        ideas: result.ideas,
+                      },
+                    });
+                  })
+                  .catch((e) => {
+                    setError(e?.message || 'Extract failed');
+                    const mock = makeMockExtraction(entry.title);
+                    dispatch({
+                      type: 'entry.setExtraction',
+                      payload: {
+                        entryId: entry.id,
+                        transcript: mock.transcript,
+                        highlights: mock.highlights,
+                        themes: mock.themes,
+                        ideas: mock.ideas,
+                      },
+                    });
                   });
-                }, 900);
                 return;
               }
 
@@ -141,6 +181,8 @@ export function EntryDetailScreen({ route, navigation }: Props) {
         ) : null}
 
         {entry.status === 'processing' ? <Text style={styles.muted}>Processing… (placeholder)</Text> : null}
+
+        {error ? <Text style={styles.error}>Using fallback extraction: {error}</Text> : null}
 
         {entry.status === 'extracted' ? (
           <>
@@ -223,6 +265,10 @@ const styles = StyleSheet.create({
     color: '#6A6A6A',
   },
   muted: {
+    fontSize: tokens.font.size[12],
+    color: '#6A6A6A',
+  },
+  error: {
     fontSize: tokens.font.size[12],
     color: '#6A6A6A',
   },
