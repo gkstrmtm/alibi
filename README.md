@@ -29,6 +29,8 @@ This repo currently focuses on the foundational app shell (navigation + screen h
 
 This repo includes a minimal Vercel serverless API under `api/`.
 
+For setup details (CLI + GitHub Actions automation), see: `VERCEL_SETUP.md`.
+
 - Health check: `/api/health`
 - Draft generation (OpenAI): `/api/ai/draft`
 
