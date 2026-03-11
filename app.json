@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "Alibi",
+    "slug": "alibi",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android", "web"]
+  }
+}
