@@ -71,13 +71,14 @@ export function EntryDetailScreen({ route, navigation }: Props) {
 
               if (canGenerate) {
                 const draftId = makeId('draft');
+                const format = entry.targetFormat ?? 'essay';
                 dispatch({
                   type: 'draft.create',
                   payload: {
                     draftId,
                     projectId: entry.projectId,
                     entryIds: [entry.id],
-                    format: 'essay',
+                    format,
                     title: 'Draft — from entry',
                     content: '(Placeholder draft generated from selected sources.)',
                   },

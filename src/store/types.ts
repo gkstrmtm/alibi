@@ -6,6 +6,8 @@ export type Entry = {
   createdAt: number;
   kind: 'voice' | 'text' | 'import';
   status: EntryStatus;
+  intent?: string;
+  targetFormat?: Draft['format'];
   durationSec?: number;
   transcript?: string;
   highlights?: string[];
@@ -72,7 +74,7 @@ export type AppState = {
 };
 
 export type AppAction =
-  | { type: 'entry.createText'; payload: { title?: string; text: string } }
+  | { type: 'entry.createText'; payload: { title?: string; text: string; intent?: string; targetFormat?: Draft['format'] } }
   | { type: 'entry.createRecordingPlaceholder'; payload: { title?: string; durationSec?: number } }
   | { type: 'entry.setStatus'; payload: { entryId: string; status: EntryStatus } }
   | {

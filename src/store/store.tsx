@@ -16,12 +16,15 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'entry.createText': {
       const id = makeId('entry');
       const now = Date.now();
+      const intent = action.payload.intent?.trim() || '';
       const entry: Entry = {
         id,
         title: action.payload.title?.trim() || 'Untitled note',
         createdAt: now,
         kind: 'text',
         status: 'captured',
+        intent: intent || undefined,
+        targetFormat: action.payload.targetFormat,
         transcript: action.payload.text,
       };
       return {
