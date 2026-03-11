@@ -39,11 +39,17 @@ Copy `.env.example` for reference.
 - On Vercel (server-side secrets)
 	- `OPENAI_API_KEY` (required)
 	- `OPENAI_MODEL` (optional; default in code)
+	- Set these in Vercel for **Production** + **Preview** (and **Development** if you use `vercel dev`).
 
 - In Expo (client-side, non-secret)
 	- `EXPO_PUBLIC_API_BASE_URL` (your deployed Vercel URL, e.g. `https://your-project.vercel.app`)
 
 The Expo app reads `EXPO_PUBLIC_API_BASE_URL` and will call the Vercel endpoint from the Studio “Generate” action. If it’s missing or the call fails, the app falls back to placeholder draft content.
+
+### Quick verify
+
+- After Vercel deploys, open: `https://YOUR_VERCEL_URL/api/health` and confirm it returns `{ ok: true, ... }`.
+- Once `OPENAI_API_KEY` is set, Studio → Draft → Generate should return real content.
 
 ## Product docs
 
