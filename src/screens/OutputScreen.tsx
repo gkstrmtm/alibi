@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import * as Speech from 'expo-speech';
+import { Ionicons } from '@expo/vector-icons';
 import { View, ScrollView, Text, TextInput, StyleSheet, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { useAppStore } from '../store/store';
+import { reviseDraft } from '../api/alibiApi';
 import { tokens } from '../theme/tokens';
 import { ScreenLayout } from '../components/ScreenLayout';
 import { InlineRecorder } from '../components/InlineRecorder';
@@ -25,34 +28,6 @@ const DARK_THEME = StyleSheet.create({
   list_item: { color: tokens.color.text, fontSize: 18, lineHeight: 28 },
 });
 
-function ContextFAB({ 
-  isRecording, 
-  onToggleRecording, 
-  onAmend 
-}: { 
-  isRecording: boolean, 
-  onToggleRecording: () => void, 
-  onAmend: (text: string) => void 
-}) {
-  if (!isRecording) {
-    return (
-      <View style={styles.fabContainer}>
-        <Pressable onPress={onToggleRecording} style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}>
-          <ScribbleMic size={64} iconSize={26} aggressive />
-        </Pressable>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.dock}>
-      <InlineRecorder onAmend={(text) => {
-        onAmend(text);
-        onToggleRecording();
-      }} />
-    </View>
-  );
-}
 
 export function OutputScreen({ route, navigation }: Props) {
   const { draftId } = route.params;
@@ -60,6 +35,18 @@ export function OutputScreen({ route, navigation }: Props) {
   const draft = state.drafts[draftId];
 
   const [isEditing, setIsEditing] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isRevising, setIsRevising] = useState(false);
+  
+  const handlePlayback = () => {
+    if (isPlaying) {
+      Speech.stop();
+      setIsPlaying(false);
+    } else {
+      Speech.speak(draft?.content || '', { onDone: () => setIsPlaying(false), onStopped: () => setIsPlaying(false) });
+      setIsPlaying(true);
+    }
+  };
   const [editedContent, setEditedContent] = useState(draft?.content || '');
   const [isRecording, setIsRecording] = useState(false);
 
@@ -117,10 +104,7 @@ export function OutputScreen({ route, navigation }: Props) {
               value={editedContent}
               onChangeText={setEditedContent}
               autoFocus
-              onBlur={() => {
-                 setIsEditing(false);
-                 handleSave();
-              }}
+              onBlur={() => handleSave()}
             />
           ) : (
             <Pressable onPress={() => setIsEditing(true)}>
@@ -133,23 +117,43 @@ export function OutputScreen({ route, navigation }: Props) {
           )}
         </ScrollView>
 
-        <ContextFAB 
-          isRecording={isRecording}
-          onToggleRecording={() => setIsRecording(!isRecording)}
-          onAmend={(text) => {
-             const newContent = isEditing
-                 ? editedContent + '\n\n' + text
-                 : (draft.content || '') + '\n\n' + text;
-             if (isEditing) {
-                 setEditedContent(newContent);
-             } else {
-                 dispatch({
-                     type: 'draft.update',
-                     payload: { draftId, content: newContent }
-                 });
-             }
-          }}
-        />
+                <View style={styles.assistantDockOuter}>
+          {isRecording ? (
+            <View style={styles.dock}>
+              <InlineRecorder onAmend={async (text) => {
+                setIsRecording(false);
+                if (!text.trim()) return;
+                setIsRevising(true);
+                const project = state.projects[draft?.projectId || ''];
+                const res = await reviseDraft({
+                  projectName: project?.name || 'Project',
+                  format: draft?.format || 'outline',
+                  draftTitle: draft?.title || '',
+                  currentDraft: draft?.content || '',
+                  instruction: text,
+                  sources: [],
+                  canon: (project?.book?.canon || []).map((ctx: any) => ({ kind: ctx.kind, title: ctx.title, detail: ctx.detail }))
+                }, { baseUrl: state.settings.apiBaseUrlOverride });
+                
+                setIsRevising(false);
+                if (res.ok) {
+                  setEditedContent(res.content);
+                  dispatch({ type: 'draft.update', payload: { draftId, content: res.content } });
+                }
+              }} />
+            </View>
+          ) : (
+            <View style={[styles.assistantDock, isRevising && {opacity: 0.5}]} pointerEvents={isRevising ? 'none' : 'auto'}>
+               <Pressable onPress={handlePlayback} style={styles.assistantActionButton}>
+                 <Ionicons name={isPlaying ? 'stop-circle' : 'volume-high'} size={24} color={tokens.color.text} />
+               </Pressable>
+               <Pressable onPress={() => setIsRecording(true)} style={styles.assistantNudgeBar}>
+                 <Ionicons name="sparkles" size={16} color={tokens.color.brand} />
+                 {isRevising ? <Text style={styles.assistantNudgeText}>Revising draft...</Text> : <Text style={styles.assistantNudgeText}>Nudge Draft...</Text>}
+               </Pressable>
+            </View>
+          )}
+        </View>
       </KeyboardAvoidingView>
     </ScreenLayout>
   );
@@ -199,11 +203,44 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     minHeight: 400,
     textAlignVertical: 'top',
-    padding: tokens.space[16],
+    padding: 0,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+  },
+  assistantDockOuter: {
+    borderTopWidth: 1,
+    borderTopColor: tokens.color.borderSubtle,
     backgroundColor: tokens.color.surface,
-    borderWidth: 1,
-    borderColor: tokens.color.border,
-    borderRadius: tokens.radius[8],
+  },
+  assistantDock: {
+    flexDirection: 'row',
+    padding: tokens.space[16],
+    paddingBottom: Platform.OS === 'ios' ? 32 : tokens.space[16],
+    alignItems: 'center',
+    gap: tokens.space[12],
+  },
+  assistantActionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: tokens.color.surface2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  assistantNudgeBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: tokens.color.surface2,
+    paddingHorizontal: tokens.space[16],
+    height: 44,
+    borderRadius: 22,
+    gap: tokens.space[8],
+  },
+  assistantNudgeText: {
+    color: tokens.color.textMuted,
+    fontSize: tokens.font.size[14],
+    fontWeight: tokens.font.weight.medium,
   },
   dock: {
     borderTopWidth: 1,
