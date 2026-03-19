@@ -37,6 +37,44 @@ export function ProjectSettingsScreen({ route, navigation }: Props) {
     [project, state.drafts],
   );
 
+  
+  const shadowBrief = useMemo(() => {
+    const extractedEntries = projectEntries.filter((entry) => entry.status === 'extracted');
+    // Threshold: we need at least 2 extracted entries to form a reliable core context direction
+    if (extractedEntries.length < 2) return null;
+
+    const allThemes = Array.from(new Set(extractedEntries.flatMap((e) => e.themes || []))).slice(0, 5);
+    const allHighlights = extractedEntries.flatMap((e) => e.highlights || []).slice(0, 3);
+    const intent = extractedEntries.find(e => e.intent)?.intent || '';
+
+    if (allThemes.length === 0) return null;
+
+    return {
+      premise: `A project exploring ${allThemes.join(', ')}. ${intent ? 'Core focus: ' + intent : ''} ${allHighlights[0] || ''}`.trim(),
+      audience: 'Readers interested in ' + allThemes.slice(0, 2).join(' and '),
+      tone: 'Conversational yet analytical',
+      constraints: 'Follow the core themes closely. Rely on established highlights.'
+    };
+  }, [projectEntries]);
+
+  const [isAutoFilling, setIsAutoFilling] = useState(false);
+
+  const handleAutoFillBrief = () => {
+    if (!shadowBrief) return;
+    setIsAutoFilling(true);
+    setBriefDraft(shadowBrief);
+    // Instant save dispatch
+    dispatch({
+      type: 'book.setBrief',
+      payload: {
+        projectId,
+        brief: shadowBrief
+      }
+    });
+    setSavedStatus('Auto-populated from project transcripts');
+    setTimeout(() => setIsAutoFilling(false), 800);
+  };
+
   const shadowMemory = useMemo(() => {
     if (project?.type !== 'book') return [];
     const existingKeys = new Set((project.book?.canon ?? []).map((card) => `${card.title}`.toLowerCase().trim()));
@@ -217,17 +255,31 @@ export function ProjectSettingsScreen({ route, navigation }: Props) {
             {activeSection === 'brief' ? <View style={styles.card}>
               <Text style={styles.cardTitle}>Core context</Text>
               <Text style={styles.cardMeta}>Keep only the framing information the project should reliably carry forward.</Text>
-              <Text style={styles.fieldEyebrow}>Premise</Text>
-              <TextInput value={briefDraft.premise} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, premise: t })); }} placeholder="What is this project?" multiline style={styles.input} />
+              
+                {shadowBrief && !briefDraft.premise && !briefDraft.audience && (
+                  <View style={[styles.legendCard, { marginBottom: tokens.space[16], borderColor: tokens.color.brand + '40', backgroundColor: tokens.color.brand + '15' }]}>
+                    <Text style={[styles.legendTitle, { color: tokens.color.brand }]}>Direction Detected</Text>
+                    <Text style={styles.legendItem}>Alibi has extracted enough themes from your recordings to suggest a Core Context.</Text>
+                    <Pressable
+                      onPress={handleAutoFillBrief}
+                      style={[{ padding: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }, { marginTop: tokens.space[8], backgroundColor: tokens.color.brand }]}
+                      disabled={isAutoFilling}
+                    >
+                      <Text style={{ color: '#FFF', fontWeight: 'bold' }}>{isAutoFilling ? 'Aligning...' : 'Auto-Fill Context'}</Text>
+                    </Pressable>
+                  </View>
+                )}
+<Text style={styles.fieldEyebrow}>Premise</Text>
+              <TextInput value={briefDraft.premise} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, premise: t })); }} onBlur={handleSave} placeholder="What is this project?" multiline style={styles.input} />
               <Text style={styles.fieldEyebrow}>Audience</Text>
-              <TextInput value={briefDraft.audience} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, audience: t })); }} placeholder="Who is this for?" multiline style={styles.input} />
+              <TextInput value={briefDraft.audience} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, audience: t })); }} onBlur={handleSave} placeholder="Who is this for?" multiline style={styles.input} />
               <Text style={styles.fieldEyebrow}>Tone</Text>
-              <TextInput value={briefDraft.tone} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, tone: t })); }} placeholder="How should it feel?" style={styles.miniInput} />
+              <TextInput value={briefDraft.tone} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, tone: t })); }} onBlur={handleSave} placeholder="How should it feel?" style={styles.miniInput} />
               <Text style={styles.fieldEyebrow}>Constraints</Text>
-              <TextInput value={briefDraft.constraints} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, constraints: t })); }} placeholder="Boundaries, rules, non-negotiables" multiline style={styles.input} />
+              <TextInput value={briefDraft.constraints} onChangeText={(t) => { setSavedStatus(null); setBriefDraft((b) => ({ ...b, constraints: t })); }} onBlur={handleSave} placeholder="Boundaries, rules, non-negotiables" multiline style={styles.input} />
               <View style={styles.editorActions}>
                 <View style={styles.editorActionItem}>
-                  <Button label="Save context" onPress={handleSave} />
+                  
                 </View>
               </View>
               {savedStatus ? <Text style={styles.cardMeta}>{savedStatus}</Text> : null}
