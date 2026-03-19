@@ -1,3 +1,5 @@
-export function makeId(prefix: string) {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+import { v4 as uuidv4 } from 'uuid';
+
+export function makeId(_prefix: string) {
+  return uuidv4();
 }

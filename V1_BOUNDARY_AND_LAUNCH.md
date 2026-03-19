@@ -16,7 +16,7 @@ V1 must still be meaningfully useful for long-form creation (especially books), 
 Turn any voice memo or text dump into: (1) clean understanding (transcript, highlights, themes), (2) ranked building blocks (idea cards + quotes/hooks), and (3) a source-linked draft in a chosen format—organized into a project and private by default.
 
 ### Long-form promise (without bloating V1)
-Alibi helps you build a book project over time by asking the right questions, saving the answers as structured “canon” cards, and keeping your outline and drafts consistent as you add more material.
+Alibi helps you build a book project over time by asking the right questions, saving the answers as structured fact cards, and keeping your outline and drafts consistent as you add more material.
 
 ### Core user outcomes
 - Capture without friction (voice or text) and never lose a thought.
@@ -75,12 +75,12 @@ Alibi helps you build a book project over time by asking the right questions, sa
 - A dedicated “Book Project” type (still private-first).
 - Project assets (structured, editable, user-approved):
   - Project Brief (1-page): premise, audience, promise, tone, constraints.
-  - Canon Cards: Characters, World, Themes, Claims/Truths, Timeline/Continuity notes.
+  - Facts: Characters, World, Themes, Claims/Truths, Timeline/Continuity notes.
   - Outline (acts/chapters) with a simple chapter list.
 - A guided “Studio Session” mode for books:
   - The system asks targeted questions (missing motivations, stakes, setting logic, POV, timeline).
-  - User answers are saved into Project Brief / Canon Cards.
-  - A “Fold In” step updates outline/chapter notes using only selected canon.
+  - User answers are saved into Project Brief / Facts.
+  - A “Fold In” step updates outline/chapter notes using only selected facts.
 - Basic deduplication: flag similar idea cards and let the user merge or keep both.
 
 ### Concept direction (minimal but real)
@@ -91,7 +91,7 @@ Alibi helps you build a book project over time by asking the right questions, sa
 - Direction cards are generic vibes and structures, not show/celebrity references.
 
 ### Output generation
-- Generate drafts from selected sources + selected idea cards (and for books: selected canon + selected chapters).
+- Generate drafts from selected sources + selected idea cards (and for books: selected facts + selected chapters).
 - Versioned drafts with a simple history list.
 - Source-linked view: show what material was included.
 - Regenerate with changed format/tone/distance.
@@ -119,39 +119,39 @@ Alibi helps you build a book project over time by asking the right questions, sa
 V1 long-form quality comes from three choices:
 1) store project knowledge as structured assets,
 2) interview the user to fill missing nuance,
-3) synthesize only from selected canon to prevent drift and filler.
+3) synthesize only from selected facts to prevent drift and filler.
 
 ### The long-form loop (V1)
 - **Accumulate inputs:** entries flow into a book project.
 - **Digest + extract:** each entry yields themes, highlights, and idea cards.
-- **Curate canon:** the user promotes items into Canon Cards (facts, characters, rules, tone).
+- **Curate facts:** the user promotes items into Facts (facts, characters, rules, tone).
 - **Interview (Studio Session):** the app asks 8–15 probing questions aimed at missing structure.
 - **Fold in:** update Project Brief and outline using those answers; show diffs/what changed.
-- **Draft chapters:** generate a chapter draft from selected canon + selected sources.
-- **Continuity check (lightweight):** warn if the new draft contradicts canon.
+- **Draft chapters:** generate a chapter draft from selected facts + selected sources.
+- **Continuity check (lightweight):** warn if the new draft contradicts saved facts.
 
 ### What “project-aware memory” should mean in V1
 - Not a mysterious, always-on memory.
 - A small set of user-visible, user-editable, user-approved assets:
   - Project Brief
-  - Canon Cards
+  - Facts
   - Outline + chapter notes
 - Generation always declares which assets were used.
 
 ### How guided interviewing stays premium (and not annoying)
 - Questions are scoped and purposeful (“choose 1 of 3 stakes,” “name the setting rule,” “what is the lie the protagonist believes”).
 - The user can skip, answer by voice, or type.
-- Every answer lands somewhere tangible (brief, canon, outline), not lost in chat.
+- Every answer lands somewhere tangible (brief, facts, outline), not lost in chat.
 
 ### Idea deduplication and drift prevention (realistic in V1)
-- Similarity detection on idea cards and canon cards.
+- Similarity detection on idea cards and fact cards.
 - Merge/keep controls.
-- “Canon wins” rule: if a new draft conflicts, prompt the user to either update canon or regenerate.
+- “Facts win” rule: if a new draft conflicts, prompt the user to either update facts or regenerate.
 
 ### What’s realistic for V1 vs what to tier/limit
 - Realistic in V1:
-  - One book project can become coherent through brief + canon + outline + studio sessions.
-  - Chapter drafts can be good if scope is constrained (single chapter, defined canon).
+  - One book project can become coherent through brief + facts + outline + studio sessions.
+  - Chapter drafts can be good if scope is constrained (single chapter, defined facts).
 - Tier/limit in V1:
   - Project-wide synthesis across huge libraries (cap project size or run less frequently).
   - Very long context ingestion (cap minutes or number of entries per “deep dive”).
@@ -237,7 +237,7 @@ This is practical guidance to reduce App Store / Play review friction, not legal
 - Provide “Delete source + derived data.”
 
 ### Policy-sensitive areas
-- AI disclosure: outputs can be wrong; show what sources/canon were used.
+- AI disclosure: outputs can be wrong; show what sources/facts were used.
 - Avoid “therapy/diagnosis” positioning.
 - Avoid “impersonate a celebrity/show” language and features.
 
@@ -266,12 +266,12 @@ The goal is to keep V1 premium and economically sane without introducing a compl
 - Higher transcription minutes.
 - More Studio Sessions (book interviews) and larger per-session context.
 - Higher draft generation limits.
-- Larger project limits (more entries per book project, more canon cards).
+- Larger project limits (more entries per book project, more fact cards).
 
 ### What to cap (even for Pro) to protect quality and cost
 - Project-wide “deep dive synthesis” frequency (e.g., 1–2 times/day) instead of unlimited.
 - Max sources per generation (forces curation; improves output quality).
-- Max canon cards included per chapter draft (forces structure).
+- Max fact cards included per chapter draft (forces structure).
 
 ### Optional later (V2+) if economics demand it
 - Consumable add-on for extra deep-dive runs or extra long-form synthesis.
@@ -311,16 +311,16 @@ Launch Alibi as a private-first mobile studio that reliably converts voice/text 
 1) transcript + highlights + themes,
 2) ranked idea cards,
 3) a source-linked draft in a chosen format,
-4) a book workflow anchored by Brief + Canon + Outline + Studio Sessions,
+4) a book workflow anchored by Brief + Facts + Outline + Studio Sessions,
 5) clean export.
 
 Do not launch as a social platform, publishing network, or impersonation/voice product.
 
 Minimum long-form capability required at launch to feel real:
 - Book Project type.
-- Canon cards + outline.
-- Studio Sessions that ask probing questions and fold answers into canon/outline.
-- Chapter drafting using selected canon + selected sources.
+- Facts + outline.
+- Studio Sessions that ask probing questions and fold answers into facts/outline.
+- Chapter drafting using selected facts + selected sources.
 
 Fastest path to premium:
 - bulletproof capture,

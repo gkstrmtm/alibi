@@ -1,67 +1,144 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-
-import { tokens } from '../theme/tokens';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { tokens } from "../theme/tokens";
 
 type Props = {
   label: string;
   onPress: () => void;
-  variant?: 'primary' | 'secondary';
+  variant?: "primary" | "secondary";
   disabled?: boolean;
+  loading?: boolean;
 };
 
-export function Button({ label, onPress, variant = 'primary', disabled }: Props) {
+export function Button({ label, onPress, variant = "primary", disabled, loading }: Props) {
+  const isDisabled = Boolean(disabled || loading);
+
+  const innerContent = (
+    <View style={[styles.inner, variant === "primary" ? styles.innerPrimary : styles.innerSecondary]}>
+      {loading ? (
+        <ActivityIndicator
+          size="small"
+          color={variant === "primary" ? tokens.color.surface : tokens.color.textMuted}
+          style={styles.spinner}
+        />
+      ) : null}
+      <Text style={[styles.label, variant === "primary" ? styles.labelPrimary : styles.labelSecondary]}>
+        {label}
+      </Text>
+    </View>
+  );
+
   return (
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
-      disabled={disabled}
-      style={({ pressed }) => [
+      disabled={isDisabled}
+      style={({ pressed, hovered }: any) => [
         styles.base,
-        variant === 'primary' ? styles.primary : styles.secondary,
-        disabled ? styles.disabled : null,
-        pressed && !disabled ? styles.pressed : null,
+        variant === "secondary" ? styles.base : null,
+        variant === "secondary" ? styles.secondary : null,
+        variant === "secondary" && hovered && !isDisabled ? styles.hoverSecondary : null,
+        isDisabled ? styles.disabled : null,
+        variant === "secondary" && pressed && !isDisabled ? styles.pressedSecondary : null,
+        variant === "primary" ? styles.primaryWrap : null,
+        variant === "primary" && pressed && !isDisabled ? styles.pressedPrimary : null,
+        variant === "primary" && hovered && !isDisabled ? styles.hoverPrimary : null,
       ]}
     >
-      <View>
-        <Text style={[styles.label, variant === 'primary' ? styles.labelPrimary : styles.labelSecondary]}>
-          {label}
-        </Text>
-      </View>
+      {variant === "primary" ? (
+        <LinearGradient
+            colors={["rgba(255, 90, 54, 0.86)", "rgba(255, 90, 54, 0.38)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.primaryBorder}
+        >
+          {innerContent}
+        </LinearGradient>
+      ) : (
+        innerContent
+      )}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   base: {
+    padding: 2,
+    borderRadius: tokens.radius[12],
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 50,
+  },
+  primaryWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 50,
+    shadowColor: tokens.color.brand,
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
+  primaryBorder: {
+    padding: 2,
+    borderRadius: tokens.radius[12],
+    width: "100%",
+  },
+  inner: {
+    width: "100%",
+    minHeight: 46,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: tokens.space[8],
     paddingVertical: tokens.space[12],
     paddingHorizontal: tokens.space[16],
-    borderRadius: tokens.radius[12],
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 10,
   },
-  primary: {
-    backgroundColor: '#111111',
-    borderColor: '#111111',
+  innerPrimary: {
+    backgroundColor: "#151515",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+  },
+  innerSecondary: {
+    backgroundColor: tokens.color.surface,
+  },
+  spinner: {
+    marginTop: 1,
   },
   secondary: {
-    backgroundColor: 'transparent',
-    borderColor: '#D0D0D0',
+    backgroundColor: tokens.color.surface3,
+    borderWidth: 1,
+    borderColor: tokens.color.border,
+  },
+  hoverPrimary: {
+    transform: [{ translateY: -1 }],
+    shadowOpacity: 0.18,
+  },
+  hoverSecondary: {
+    borderColor: tokens.color.accentRing,
+    backgroundColor: tokens.color.surface2,
+    transform: [{ translateY: -1 }],
   },
   disabled: {
-    opacity: 0.5,
+    opacity: 0.58,
   },
-  pressed: {
-    opacity: 0.85,
+  pressedPrimary: {
+    opacity: 0.92,
+  },
+  pressedSecondary: {
+    backgroundColor: tokens.color.surface3,
+    borderColor: tokens.color.accentRing,
   },
   label: {
-    fontSize: tokens.font.size[16],
+    fontSize: tokens.font.size[14],
     fontWeight: tokens.font.weight.semibold,
+    letterSpacing: 0.3,
   },
   labelPrimary: {
-    color: '#FFFFFF',
+    color: "#fff",
   },
   labelSecondary: {
-    color: '#111111',
+    color: tokens.color.text,
   },
 });

@@ -13,99 +13,70 @@ import { makeId } from '../utils/id';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EntryDetail'>;
 
-function makeMockExtraction(title: string) {
-  const transcript = `${title}: (Placeholder transcript.)\n\nI’m trying to name the real idea underneath the mess.`;
-  const highlights = [
-    'Name the real idea underneath the mess.',
-    'Turn fragments into something directional.',
-  ];
-  const themes = ['Direction', 'Voice', 'Long-form'];
-  const ideas = [
-    { title: 'Central tension', detail: 'What the project is trying to resolve.' },
-    { title: 'Recurring question', detail: 'A question that anchors chapters.' },
-    { title: 'Constraint', detail: 'A rule that prevents generic writing.' },
-  ];
-  return { transcript, highlights, themes, ideas };
-}
-
 export function EntryDetailScreen({ route, navigation }: Props) {
   const { entryId } = route.params;
   const { state, dispatch } = useAppStore();
   const entry = state.entries[entryId];
 
-  const [ran, setRan] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isTranscriptExpanded, setIsTranscriptExpanded] = useState(false);
 
   useEffect(() => {
-    setRan(false);
+    setIsExtracting(false);
     setError(null);
   }, [entryId]);
 
   const canGenerate = entry?.status === 'extracted';
+
+  async function handleExtract() {
+    if (!entry || isExtracting) return;
+
+    setError(null);
+    setIsExtracting(true);
+    dispatch({ type: 'entry.setStatus', payload: { entryId: entry.id, status: 'processing' } });
+
+    const result = await extractEntry({
+      title: entry.title,
+      transcript: entry.transcript ?? '',
+      intent: entry.intent,
+      targetFormat: entry.targetFormat,
+    });
+
+    if (!result.ok) {
+      dispatch({ type: 'entry.setStatus', payload: { entryId: entry.id, status: 'captured' } });
+      setError(result.error);
+      setIsExtracting(false);
+      return;
+    }
+
+    dispatch({
+      type: 'entry.setExtraction',
+      payload: {
+        entryId: entry.id,
+        transcript: result.transcript,
+        highlights: result.highlights,
+        themes: result.themes,
+        ideas: result.ideas,
+      },
+    });
+    setIsExtracting(false);
+  }
+
   const sticky = useMemo(() => {
     if (!entry) return null;
     return (
       <View style={styles.stickyRow}>
         <View style={styles.stickyItem}>
-          <Button label="Add to Project" variant="secondary" onPress={() => {}} />
+          <Button label="Add to Project" variant="secondary" onPress={() => navigation.navigate('SelectProject', { entryId: entry.id })} />
         </View>
         <View style={styles.stickyItem}>
           <Button
-            label={entry.status === 'captured' ? 'Digest & Extract' : 'Generate Draft'}
+            label={entry.status === 'captured' ? 'Digest & Extract' : 'Quick Output (Standalone)'}
+            loading={entry.status === 'captured' ? isExtracting : false}
             onPress={() => {
               if (entry.status === 'captured') {
-                if (ran) return;
-                setError(null);
-                dispatch({ type: 'entry.setStatus', payload: { entryId: entry.id, status: 'processing' } });
-                setRan(true);
-                extractEntry({
-                  title: entry.title,
-                  transcript: entry.transcript ?? '',
-                  intent: entry.intent,
-                  targetFormat: entry.targetFormat,
-                })
-                  .then((result) => {
-                    if (!result.ok) {
-                      setError(result.error);
-                      const mock = makeMockExtraction(entry.title);
-                      dispatch({
-                        type: 'entry.setExtraction',
-                        payload: {
-                          entryId: entry.id,
-                          transcript: mock.transcript,
-                          highlights: mock.highlights,
-                          themes: mock.themes,
-                          ideas: mock.ideas,
-                        },
-                      });
-                      return;
-                    }
-
-                    dispatch({
-                      type: 'entry.setExtraction',
-                      payload: {
-                        entryId: entry.id,
-                        transcript: result.transcript,
-                        highlights: result.highlights,
-                        themes: result.themes,
-                        ideas: result.ideas,
-                      },
-                    });
-                  })
-                  .catch((e) => {
-                    setError(e?.message || 'Extract failed');
-                    const mock = makeMockExtraction(entry.title);
-                    dispatch({
-                      type: 'entry.setExtraction',
-                      payload: {
-                        entryId: entry.id,
-                        transcript: mock.transcript,
-                        highlights: mock.highlights,
-                        themes: mock.themes,
-                        ideas: mock.ideas,
-                      },
-                    });
-                  });
+                void handleExtract();
                 return;
               }
 
@@ -130,7 +101,7 @@ export function EntryDetailScreen({ route, navigation }: Props) {
         </View>
       </View>
     );
-  }, [canGenerate, dispatch, entry, navigation, state.drafts]);
+  }, [canGenerate, dispatch, entry, handleExtract, isExtracting, navigation, state.drafts]);
 
   if (!entry) {
     return (
@@ -155,45 +126,26 @@ export function EntryDetailScreen({ route, navigation }: Props) {
         {entry.status === 'captured' ? (
           <View style={styles.primaryActionCard}>
             <Text style={styles.primaryActionTitle}>Ready to digest</Text>
-            <Text style={styles.primaryActionSubtitle}>Turn this into highlights, ideas, and themes.</Text>
+            <Text style={styles.primaryActionSubtitle}>Turn the raw transcript into highlights, ideas, and themes when the API is available.</Text>
             <Button
               label="Digest & Extract"
-              onPress={() => {
-                if (ran) return;
-                dispatch({ type: 'entry.setStatus', payload: { entryId: entry.id, status: 'processing' } });
-                setRan(true);
-                setTimeout(() => {
-                  const mock = makeMockExtraction(entry.title);
-                  dispatch({
-                    type: 'entry.setExtraction',
-                    payload: {
-                      entryId: entry.id,
-                      transcript: mock.transcript,
-                      highlights: mock.highlights,
-                      themes: mock.themes,
-                      ideas: mock.ideas,
-                    },
-                  });
-                }, 900);
-              }}
+              loading={isExtracting}
+              onPress={() => void handleExtract()}
             />
           </View>
         ) : null}
 
-        {entry.status === 'processing' ? <Text style={styles.muted}>Processing… (placeholder)</Text> : null}
+        {entry.status === 'processing' ? <Text style={styles.muted}>Digesting the capture…</Text> : null}
 
-        {error ? <Text style={styles.error}>Using fallback extraction: {error}</Text> : null}
+        {error ? (
+          <View style={styles.errorCard}>
+            <Text style={styles.errorTitle}>Digest unavailable right now</Text>
+            <Text style={styles.error}>{error}</Text>
+          </View>
+        ) : null}
 
         {entry.status === 'extracted' ? (
           <>
-            <Section title="Highlights">
-              {(entry.highlights ?? []).slice(0, 10).map((h: string, idx: number) => (
-                <Text key={idx} style={styles.bullet}>
-                  • {h}
-                </Text>
-              ))}
-            </Section>
-
             <Section title="Top Ideas">
               {(entry.ideas ?? []).slice(0, 5).map((i: { title: string; detail?: string }, idx: number) => (
                 <View key={idx} style={styles.ideaCard}>
@@ -213,10 +165,24 @@ export function EntryDetailScreen({ route, navigation }: Props) {
               </View>
             </Section>
 
-            <Section title="Transcript">
-              <Text style={styles.transcript}>{entry.transcript ?? '(No transcript)'}</Text>
+            <Section title="Highlights">
+              {(entry.highlights ?? []).slice(0, 10).map((h: string, idx: number) => (
+                <Text key={idx} style={styles.bullet}>
+                  • {h}
+                </Text>
+              ))}
             </Section>
           </>
+        ) : null}
+
+        {entry.transcript ? (
+          <Section title={entry.status === 'extracted' ? 'Transcript' : 'Raw transcript'}>
+            {!isTranscriptExpanded ? (
+              <Button label="View Full Transcript" variant="secondary" onPress={() => setIsTranscriptExpanded(true)} />
+            ) : (
+              <Text style={styles.transcript}>{entry.transcript}</Text>
+            )}
+          </Section>
         ) : null}
       </ScrollView>
     </ScreenLayout>
@@ -270,7 +236,21 @@ const styles = StyleSheet.create({
   },
   error: {
     fontSize: tokens.font.size[12],
-    color: '#6A6A6A',
+    color: '#8a4434',
+    lineHeight: 18,
+  },
+  errorCard: {
+    padding: tokens.space[12],
+    borderWidth: 1,
+    borderColor: 'rgba(255, 90, 54, 0.22)',
+    backgroundColor: 'rgba(255, 90, 54, 0.08)',
+    borderRadius: tokens.radius[12],
+    gap: tokens.space[4],
+  },
+  errorTitle: {
+    fontSize: tokens.font.size[12],
+    fontWeight: tokens.font.weight.semibold,
+    color: '#7a2d1e',
   },
   bullet: {
     fontSize: tokens.font.size[14],

@@ -1,0 +1,3 @@
+src/screens/ProjectsScreen.tsx(119,82): error TS2339: Property 'substring' does not exist on type '{ premise: string; audience: string; tone: string; constraints: string; }'.
+src/screens/StudioScreen.tsx(88,19): error TS2367: This comparison appears to be unintentional because the types 'StudioMode' and '"build"' have no overlap.
+src/screens/StudioScreen.tsx(129,10): error TS2367: This comparison appears to be unintentional because the types 'StudioMode' and '"build"' have no overlap.

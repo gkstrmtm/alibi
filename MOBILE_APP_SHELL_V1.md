@@ -173,7 +173,7 @@ Avoid internal tabs in V1; use sections with a single primary action.
   - **Project Next Step** card (one): “Continue Studio Session” / “Draft Chapter 2” / “Review Outline”
   - For Book projects: three pinned assets as rows:
     1) Brief
-    2) Canon
+    2) Facts
     3) Outline
 - **Secondary content (below fold)**
   - Sections (collapsible):
@@ -199,7 +199,7 @@ This is not a chat app; it’s a session room.
 - **Primary content (above the fold)**
   - A single “mode strip” (not tabs):
     - **Interview** (ask questions)
-    - **Build** (brief/canon)
+    - **Build** (brief/facts)
     - **Outline**
     - **Draft**
   - Default to the mode that matches “next step.”
@@ -211,7 +211,7 @@ This is not a chat app; it’s a session room.
 - **Main CTA**
   - Depends on mode; always one primary
 - **Hidden in sheets**
-  - Source selection, canon selection, tone/distance controls
+  - Source selection, facts selection, tone/distance controls
 - **Why**
   - Long-form feels premium when decisions are captured as assets, not lost in chat.
 

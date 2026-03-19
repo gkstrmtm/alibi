@@ -46,7 +46,7 @@ Copy `.env.example` for reference.
 - In Expo (client-side, non-secret)
 	- `EXPO_PUBLIC_API_BASE_URL` (your deployed Vercel URL, e.g. `https://your-project.vercel.app`)
 
-The Expo app reads `EXPO_PUBLIC_API_BASE_URL` and will call the Vercel endpoint from the Studio “Generate” action. If it’s missing or the call fails, the app falls back to placeholder draft content.
+The Expo app reads `EXPO_PUBLIC_API_BASE_URL` and will call the Vercel endpoint from the Studio “Generate” action. If it’s missing or the call fails, the app shows an explicit error and does not create a draft.
 
 ### Quick verify
 

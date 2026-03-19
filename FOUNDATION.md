@@ -128,7 +128,7 @@ This is the control layer.
 - Smart collections
 - Project-specific context bundles
 - Selected / excluded states
-- Canon or approved-source state
+- Facts (approved-source state)
 - Search across recordings and extracts
 - Related-entry suggestions
 

@@ -1,0 +1,27 @@
+OutputScreen.backup.tsx(8,41): error TS2307: Cannot find module '../navigation/types' or its corresponding type declarations.
+OutputScreen.backup.tsx(9,52): error TS2307: Cannot find module '../api/alibiApi' or its corresponding type declarations.
+OutputScreen.backup.tsx(10,29): error TS2307: Cannot find module '../store/store' or its corresponding type declarations.
+OutputScreen.backup.tsx(11,24): error TS2307: Cannot find module '../components/Button' or its corresponding type declarations.
+OutputScreen.backup.tsx(12,30): error TS2307: Cannot find module '../components/ScreenLayout' or its corresponding type declarations.
+OutputScreen.backup.tsx(13,25): error TS2307: Cannot find module '../components/Section' or its corresponding type declarations.
+OutputScreen.backup.tsx(14,29): error TS2307: Cannot find module '../components/ScribbleMic' or its corresponding type declarations.
+OutputScreen.backup.tsx(15,32): error TS2307: Cannot find module '../components/InlineRecorder' or its corresponding type declarations.
+OutputScreen.backup.tsx(16,23): error TS2307: Cannot find module '../components/Toast' or its corresponding type declarations.
+OutputScreen.backup.tsx(17,24): error TS2307: Cannot find module '../theme/tokens' or its corresponding type declarations.
+OutputScreen.backup.tsx(18,77): error TS2307: Cannot find module '../utils/draftFormatting' or its corresponding type declarations.
+OutputScreen.backup.tsx(19,39): error TS2307: Cannot find module '../utils/projectMemory' or its corresponding type declarations.
+OutputScreen.backup.tsx(20,37): error TS2307: Cannot find module '../utils/feedback' or its corresponding type declarations.
+OutputScreen.backup.tsx(21,24): error TS2307: Cannot find module '../utils/id' or its corresponding type declarations.
+OutputScreen.backup.tsx(300,36): error TS7006: Parameter 'o' implicitly has an 'any' type.
+OutputScreen.backup.tsx(303,56): error TS7006: Parameter 'o' implicitly has an 'any' type.
+OutputScreen.backup.tsx(312,53): error TS7006: Parameter 'id' implicitly has an 'any' type.
+OutputScreen.backup.tsx(314,36): error TS7006: Parameter 'entry' implicitly has an 'any' type.
+OutputScreen.backup.tsx(314,73): error TS7006: Parameter 'theme' implicitly has an 'any' type.
+OutputScreen.backup.tsx(317,72): error TS2322: Type 'unknown[]' is not assignable to type 'string[]'.
+  Type 'unknown' is not assignable to type 'string'.
+OutputScreen.backup.tsx(571,17): error TS7006: Parameter 'id' implicitly has an 'any' type.
+OutputScreen.backup.tsx(573,17): error TS7006: Parameter 'entry' implicitly has an 'any' type.
+OutputScreen.backup.tsx(576,48): error TS7006: Parameter 'card' implicitly has an 'any' type.
+OutputScreen.backup.tsx(779,55): error TS7006: Parameter 'item' implicitly has an 'any' type.
+OutputScreen.backup.tsx(784,60): error TS7006: Parameter 'item' implicitly has an 'any' type.
+OutputScreen.backup.tsx(993,64): error TS7006: Parameter 'item' implicitly has an 'any' type.

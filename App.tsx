@@ -1,3 +1,4 @@
+import './src/polyfills';
 import { AppRoot } from './src/AppRoot';
 
 export default function App() {

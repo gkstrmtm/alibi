@@ -30,6 +30,8 @@ Set in Vercel → Project → Settings → Environment Variables:
 
 - `OPENAI_API_KEY` (required)
 - `OPENAI_MODEL` (optional)
+- `ELEVENLABS_API_KEY` (optional, reserved for premium TTS / readback)
+- `ELEVENLABS_VOICE_ID` (optional, forces a specific ElevenLabs voice)
 
 ## Client env var (non-secret)
 

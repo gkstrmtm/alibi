@@ -1,5 +1,4 @@
-import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useNavigation } from '@react-navigation/native';
+import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -9,14 +8,19 @@ import { ScreenLayout } from '../components/ScreenLayout';
 import { Section } from '../components/Section';
 import { tokens } from '../theme/tokens';
 import { useAppStore } from '../store/store';
+import { makeId } from '../utils/id';
 
 type TargetFormat = 'essay' | 'commentary' | 'podcast-outline' | 'script' | 'thread' | 'book-chapter';
 
-type Nav = NativeStackNavigationProp<RootStackParamList>;
+type Props = NativeStackScreenProps<RootStackParamList, 'TypeNote'>;
 
-export function TypeNoteScreen() {
-  const navigation = useNavigation<Nav>();
+export function TypeNoteScreen({ navigation, route }: Props) {
   const { dispatch } = useAppStore();
+  const projectId = route.params?.projectId;
+  const draftId = route.params?.draftId;
+  const returnTo = route.params?.returnTo ?? 'tabs';
+  const intakeKey = route.params?.intakeKey;
+  const promptLabel = route.params?.promptLabel?.trim();
   const [text, setText] = useState('');
   const [intent, setIntent] = useState('');
   const [targetFormat, setTargetFormat] = useState<TargetFormat | undefined>(undefined);
@@ -34,13 +38,39 @@ export function TypeNoteScreen() {
       stickyBottom={
         <View style={styles.stickyRow}>
           <Button label="Save" onPress={() => {
-            dispatch({ type: 'entry.createText', payload: { text, intent: intent.trim() || undefined, targetFormat } });
+            const entryId = makeId('entry');
+            const effectiveIntent = intakeKey ? `intake:${intakeKey}` : intent.trim() || undefined;
+            dispatch({ type: 'entry.createText', payload: { entryId, title: promptLabel ? `Intake — ${promptLabel}` : undefined, text, intent: effectiveIntent, targetFormat, intakeKey } });
+            if (projectId) {
+              dispatch({ type: 'project.addEntry', payload: { projectId, entryId } });
+              if (returnTo === 'studio') {
+                navigation.replace('Studio', { projectId });
+                return;
+              }
+              if (returnTo === 'project') {
+                navigation.replace('ProjectDetail', { projectId });
+                return;
+              }
+              if (returnTo === 'output' && draftId) {
+                navigation.replace('Output', { draftId });
+                return;
+              }
+            }
+            if (returnTo === 'output' && draftId) {
+              navigation.replace('Output', { draftId });
+              return;
+            }
             navigation.navigate('Tabs');
           }} disabled={!text.trim()} />
         </View>
       }
     >
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll} overScrollMode="never" bounces={false} showsVerticalScrollIndicator={false}>
+        {promptLabel ? (
+          <Section title="Prompt">
+            <Text style={styles.helper}>{promptLabel}</Text>
+          </Section>
+        ) : null}
         <Section title="What are you doing?">
           <Text style={styles.helper}>Keep it loose. You can change it later.</Text>
           <View style={styles.chipsRow}>
@@ -57,6 +87,7 @@ export function TypeNoteScreen() {
             value={intent}
             onChangeText={setIntent}
             placeholder="e.g. I'm trying to explain a belief, or work through a moment"
+            placeholderTextColor={tokens.color.textFaint}
             style={styles.miniInput}
           />
         </Section>
@@ -85,6 +116,7 @@ export function TypeNoteScreen() {
             value={text}
             onChangeText={setText}
             placeholder="Write the raw thought. You can shape it later."
+            placeholderTextColor={tokens.color.textFaint}
             multiline
             style={styles.input}
           />
@@ -109,7 +141,7 @@ const styles = StyleSheet.create({
   },
   helper: {
     fontSize: tokens.font.size[12],
-    color: '#6A6A6A',
+    color: tokens.color.textMuted,
   },
   chipsRow: {
     flexDirection: 'row',
@@ -119,39 +151,41 @@ const styles = StyleSheet.create({
   chip: {
     paddingVertical: tokens.space[8],
     paddingHorizontal: tokens.space[12],
-    borderRadius: tokens.radius[999],
+    borderRadius: tokens.radius[12],
     borderWidth: 1,
-    borderColor: '#D0D0D0',
-    backgroundColor: 'transparent',
+    borderColor: tokens.color.borderSubtle,
+    backgroundColor: tokens.color.surface,
   },
   chipSelected: {
-    borderColor: '#111111',
-    backgroundColor: '#111111',
+    borderColor: tokens.color.accentRing,
+    backgroundColor: tokens.color.accentSoft,
   },
   chipLabel: {
     fontSize: tokens.font.size[12],
-    color: '#111111',
+    color: tokens.color.textMuted,
     fontWeight: tokens.font.weight.semibold,
   },
   chipLabelSelected: {
-    color: '#FFFFFF',
+    color: tokens.color.text,
   },
   miniInput: {
     borderWidth: 1,
-    borderColor: '#E6E6E6',
+    borderColor: tokens.color.border,
+    backgroundColor: tokens.color.surface2,
     borderRadius: tokens.radius[12],
     padding: tokens.space[12],
     fontSize: tokens.font.size[14],
-    color: '#111111',
+    color: tokens.color.text,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#E6E6E6',
+    borderColor: tokens.color.border,
+    backgroundColor: tokens.color.surface2,
     borderRadius: tokens.radius[12],
     padding: tokens.space[16],
     textAlignVertical: 'top',
     fontSize: tokens.font.size[16],
-    color: '#111111',
+    color: tokens.color.text,
     minHeight: 220,
   },
   stickyRow: {
