@@ -241,7 +241,7 @@ export function ProjectSettingsScreen({ route, navigation }: Props) {
               {([
                 { key: 'brief', label: 'Core context' },
                 { key: 'canon', label: 'Story memory' },
-                  { key: 'outline', label: 'Chapter lanes' },
+                  { key: 'outline', label: 'Story Outline' },
               ] as const).map((item) => (
                 <Pressable
                   key={item.key}
@@ -288,148 +288,212 @@ export function ProjectSettingsScreen({ route, navigation }: Props) {
             {activeSection === 'canon' ? <View style={styles.card}>
               <Text style={styles.cardTitle}>Story memory</Text>
               <Text style={styles.cardMeta}>Facts worth keeping true should feel close at hand, not hidden behind setup.</Text>
-              <View style={styles.legendCard}>
-                <Text style={styles.legendTitle}>{canonEditorLabel}</Text>
-                <Text style={styles.legendItem}>{editingCanonId ? 'You are changing an existing memory card.' : selectedShadowId ? 'This suggestion came from source. Adjust it if needed, then lock it.' : 'Write a fact directly when it needs to stay true before the next draft.'}</Text>
-                <View style={styles.kindRow}>
-                  {(['claim', 'character', 'world', 'theme', 'timeline'] as const).map((kind) => (
-                    <Pressable key={kind} onPress={() => setCardKind(kind)} style={[styles.kindPill, cardKind === kind ? styles.kindPillActive : null]}>
-                      <Text style={[styles.kindPillText, cardKind === kind ? styles.kindPillTextActive : null]}>{kind}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-                <TextInput value={cardTitle} onChangeText={(t) => { setSavedStatus(null); setCardTitle(t); }} placeholder="Card title" style={styles.miniInput} />
-                <TextInput value={cardDetail} onChangeText={(t) => { setSavedStatus(null); setCardDetail(t); }} placeholder="What should stay true?" multiline style={styles.input} />
-                <View style={styles.editorActions}>
-                  <View style={styles.editorActionItem}>
-                    <Button label={editingCanonId ? 'Update story memory' : 'Save story memory'} onPress={addCanonCard} disabled={!cardTitle.trim() || !cardDetail.trim()} />
-                  </View>
-                  {(editingCanonId || selectedShadowId || cardTitle || cardDetail) ? (
-                    <View style={styles.editorActionItem}>
-                      <Button label="Clear" variant="secondary" onPress={() => {
-                        setEditingCanonId(null);
-                        setSelectedShadowId(null);
-                        setCardTitle('');
-                        setCardDetail('');
-                        setSavedStatus(null);
-                      }} />
-                    </View>
-                  ) : null}
-                </View>
-              </View>
+
               <Text style={styles.fieldEyebrow}>Suggested from source</Text>
-              <Text style={styles.cardMeta}>The first source suggestion loads automatically. Tap another anytime.</Text>
+              <Text style={styles.cardMeta}>Extracts from your voice entries. Tap "Lock" to move them into memory.</Text>
               {shadowMemory.length ? (
                 <View style={styles.stack}>
                   {visibleShadowMemory.map((item) => (
-                    <Pressable
-                      key={item.id}
-                      onPress={() => {
-                        setSavedStatus(null);
-                        setEditingCanonId(null);
-                        setSelectedShadowId(item.id);
-                        setCardKind(item.kind);
-                        setCardTitle(item.title);
-                        setCardDetail(item.detail);
-                      }}
-                      style={[styles.inlineCard, selectedShadowId === item.id ? styles.inlineCardSelected : null]}
-                    >
+                    <View key={item.id} style={styles.inlineCard}>
                       <Text style={styles.inlineCardEyebrow}>{`SHADOW EXTRACT • ${item.source.toUpperCase()}`}</Text>
                       <Text style={styles.inlineCardTitle}>{item.title}</Text>
                       <Text style={styles.inlineCardBody}>{item.detail}</Text>
-                    </Pressable>
+                      <Pressable 
+                        onPress={() => {
+                          dispatch({ type: 'book.addCanonCard', payload: { projectId, kind: item.kind, title: item.title, detail: item.detail } });
+                        }}
+                        style={[styles.miniButton, { marginTop: tokens.space[8] }]}
+                      >
+                        <Text style={styles.miniButtonText}>Lock to Memory</Text>
+                      </Pressable>
+                    </View>
                   ))}
                   {hiddenShadowCount ? <Text style={styles.cardMeta}>{`${hiddenShadowCount} more suggestions will appear after these.`}</Text> : null}
                 </View>
               ) : (
                 <View style={styles.inlineCard}>
-                  <Text style={styles.inlineCardTitle}>No shadow memory yet</Text>
                   <Text style={styles.inlineCardBody}>Once project entries are extracted, suggested facts will appear here automatically for review.</Text>
                 </View>
               )}
-              {savedStatus ? <Text style={styles.cardMeta}>{savedStatus}</Text> : null}
+
               <Text style={styles.fieldEyebrow}>Locked memory</Text>
               {(project.book?.canon ?? []).length ? (
                 <View style={styles.stack}>
                   {(project.book?.canon ?? []).map((card) => (
-                    <Pressable
-                      key={card.id}
-                      onPress={() => {
-                        setSavedStatus(null);
-                        setEditingCanonId(card.id);
-                        setSelectedShadowId(null);
-                        setCardKind(card.kind);
-                        setCardTitle(card.title);
-                        setCardDetail(card.detail);
-                      }}
-                      style={[styles.inlineCard, editingCanonId === card.id ? styles.inlineCardSelected : null]}
-                    >
-                      <Text style={styles.inlineCardEyebrow}>{card.kind.toUpperCase()}</Text>
-                      <Text style={styles.inlineCardTitle}>{card.title}</Text>
-                      <Text style={styles.inlineCardBody}>{card.detail}</Text>
-                    </Pressable>
+                    <View key={card.id} style={[styles.inlineCard, { borderColor: tokens.color.brand + '40', backgroundColor: tokens.color.brand + '05' }]}>
+                      {editingCanonId === card.id ? (
+                        <View style={{ gap: tokens.space[8] }}>
+                          <TextInput 
+                            value={cardTitle} 
+                            onChangeText={setCardTitle} 
+                            style={styles.miniInput} 
+                            placeholder="Title" 
+                          />
+                          <TextInput 
+                            value={cardDetail} 
+                            onChangeText={setCardDetail} 
+                            style={styles.input} 
+                            multiline 
+                            placeholder="Detail" 
+                          />
+                          <View style={styles.editorActions}>
+                             <Pressable style={styles.miniButton} onPress={() => {
+                                dispatch({ type: 'book.updateCanonCard', payload: { projectId, canonCardId: card.id, kind: card.kind, title: cardTitle, detail: cardDetail } });
+                                setEditingCanonId(null);
+                             }}>
+                                <Text style={styles.miniButtonText}>Save</Text>
+                             </Pressable>
+                             <Pressable style={styles.miniButtonSecondary} onPress={() => setEditingCanonId(null)}>
+                                <Text style={styles.miniButtonTextSecondary}>Cancel</Text>
+                             </Pressable>
+                          </View>
+                        </View>
+                      ) : (
+                        <Pressable onPress={() => { setEditingCanonId(card.id); setCardTitle(card.title); setCardDetail(card.detail); }}>
+                          <Text style={styles.inlineCardEyebrow}>{card.kind.toUpperCase()}</Text>
+                          <Text style={styles.inlineCardTitle}>{card.title}</Text>
+                          <Text style={styles.inlineCardBody}>{card.detail}</Text>
+                        </Pressable>
+                      )}
+                    </View>
                   ))}
                 </View>
               ) : (
                 <View style={styles.inlineCard}>
-                  <Text style={styles.inlineCardTitle}>No story memory yet</Text>
-                  <Text style={styles.inlineCardBody}>Use the shadow suggestions above, or write one directly if you need to lock a fact before the next draft.</Text>
+                  <Text style={styles.inlineCardBody}>Write a fact directly when it needs to stay true before the next draft.</Text>
                 </View>
               )}
+              
+              {!editingCanonId && (
+                <View style={[styles.inlineCard, { borderStyle: 'dashed' }]}>
+                  <TextInput 
+                    placeholder="Add a new locked memory..."
+                    style={styles.miniInput}
+                    value={selectedShadowId === 'NEW' ? cardTitle : ''}
+                    onFocus={() => { setSelectedShadowId('NEW'); setCardTitle(''); setCardDetail(''); }}
+                    onChangeText={setCardTitle}
+                  />
+                  {selectedShadowId === 'NEW' && (
+                    <>
+                      <TextInput 
+                        placeholder="Detail..."
+                        style={styles.input}
+                        multiline
+                        value={cardDetail}
+                        onChangeText={setCardDetail}
+                      />
+                      <View style={styles.editorActions}>
+                        <Pressable style={styles.miniButton} onPress={() => {
+                          if(cardTitle.trim() && cardDetail.trim()) {
+                            dispatch({ type: 'book.addCanonCard', payload: { projectId, kind: 'claim', title: cardTitle, detail: cardDetail } });
+                            setSelectedShadowId(null);
+                            setCardTitle('');
+                            setCardDetail('');
+                          }
+                        }}>
+                          <Text style={styles.miniButtonText}>Add Memory</Text>
+                        </Pressable>
+                        <Pressable style={styles.miniButtonSecondary} onPress={() => setSelectedShadowId(null)}>
+                          <Text style={styles.miniButtonTextSecondary}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    </>
+                  )}
+                </View>
+              )}
+
             </View> : null}
 
             {activeSection === 'outline' ? <View style={styles.card}>
-              <Text style={styles.cardTitle}>Chapter lanes</Text>
-              <Text style={styles.cardMeta}>This is the working path of the manuscript. The system keeps a forward shape under the hood, but this surface should read like clear chapter lanes, not abstract story mechanics.</Text>
-              <View style={styles.legendCard}>
-                <Text style={styles.legendTitle}>How this helps</Text>
-                <Text style={styles.legendItem}>{describeNarrativeProgress({ project, draftsById: state.drafts })}</Text>
-                <Text style={styles.legendItem}>Auto-shaped beats keep the manuscript moving forward even before every chapter lane is manually refined.</Text>
-                <Text style={styles.legendItem}>When a new draft clearly belongs in one lane, it deepens that lane instead of drifting off as a disconnected chapter.</Text>
-              </View>
-              <Text style={styles.fieldEyebrow}>Lane editor</Text>
-              <Text style={styles.cardMeta}>{editingOutlineId ? 'You are editing an existing chapter lane. Rename it or tighten what this part needs to carry.' : 'Add a lane only when you know what this part of the manuscript is responsible for.'}</Text>
-              <TextInput value={outlineTitle} onChangeText={(t) => { setSavedStatus(null); setOutlineTitle(t); }} placeholder="Name this chapter lane" style={styles.miniInput} />
-              <TextInput value={outlineNote} onChangeText={(t) => { setSavedStatus(null); setOutlineNote(t); }} placeholder="What should this lane carry forward?" multiline style={styles.input} />
-              <View style={styles.editorActions}>
-                <View style={styles.editorActionItem}>
-                  <Button label={editingOutlineId ? 'Update lane' : 'Add lane'} onPress={saveOutlineStep} disabled={!outlineTitle.trim()} />
-                </View>
-                {(editingOutlineId || outlineTitle || outlineNote) ? (
-                  <View style={styles.editorActionItem}>
-                    <Button label="Clear" variant="secondary" onPress={() => {
-                      setSavedStatus(null);
-                      resetOutlineEditor();
-                    }} />
-                  </View>
-                ) : null}
-              </View>
-              {savedStatus ? <Text style={styles.cardMeta}>{savedStatus}</Text> : null}
-              <Text style={styles.fieldEyebrow}>Current chapter lanes</Text>
+              <Text style={styles.cardTitle}>Story Outline</Text>
+              <Text style={styles.cardMeta}>The working path of your project. Clear narrative beats that guide the AI.</Text>
+
               {narrativeProgress.steps.length ? (
                 <View style={styles.stack}>
                   {narrativeProgress.steps.map((item, index) => (
-                    <Pressable
-                      key={item.id}
-                      onPress={() => {
-                        setSavedStatus(null);
-                        setEditingOutlineId(item.id);
-                        setOutlineTitle(item.title);
-                        setOutlineNote(item.note ?? '');
-                      }}
-                      style={[styles.inlineCard, editingOutlineId === item.id ? styles.inlineCardSelected : null]}
-                    >
-                      <Text style={styles.inlineCardEyebrow}>{`${item.label.toUpperCase()} • PART ${index + 1}`}</Text>
-                      <Text style={styles.inlineCardTitle}>{item.title}</Text>
-                      <Text style={styles.inlineCardBody}>{item.note?.trim() ? item.note : 'Describe the change, pressure, or turn this lane is responsible for.'}</Text>
-                      <Text style={styles.cardMeta}>{`${item.status === 'expanded' ? `${item.draftCount} drafts deep here` : item.status === 'drafted' ? 'Already drafted once' : item.status === 'next' ? 'Next likely lane' : item.origin === 'auto' ? 'Auto-shaped lane' : 'Planned lane'} • ${narrativeStepPreview(item)}`}</Text>
-                    </Pressable>
+                    <View key={item.id} style={styles.inlineCard}>
+                      {editingOutlineId === item.id ? (
+                         <View style={{ gap: tokens.space[8] }}>
+                           <TextInput 
+                              value={outlineTitle} 
+                              onChangeText={setOutlineTitle} 
+                              style={styles.miniInput} 
+                              placeholder="Beat Title" 
+                            />
+                            <TextInput 
+                              value={outlineNote} 
+                              onChangeText={setOutlineNote} 
+                              style={styles.input} 
+                              multiline 
+                              placeholder="What happens in this beat?" 
+                            />
+                            <View style={styles.editorActions}>
+                               <Pressable style={styles.miniButton} onPress={() => {
+                                  dispatch({ type: 'book.updateOutlineItem', payload: { projectId, outlineItemId: item.id, title: outlineTitle, note: outlineNote } });
+                                  setEditingOutlineId(null);
+                               }}>
+                                  <Text style={styles.miniButtonText}>Save Beat</Text>
+                               </Pressable>
+                               <Pressable style={styles.miniButtonSecondary} onPress={() => setEditingOutlineId(null)}>
+                                  <Text style={styles.miniButtonTextSecondary}>Cancel</Text>
+                               </Pressable>
+                            </View>
+                         </View>
+                      ) : (
+                        <Pressable onPress={() => { setEditingOutlineId(item.id); setOutlineTitle(item.title); setOutlineNote(item.note || ''); }}>
+                          <Text style={styles.inlineCardEyebrow}>{`BEAT ${index + 1}`}</Text>
+                          <Text style={styles.inlineCardTitle}>{item.title}</Text>
+                          <Text style={styles.inlineCardBody}>{item.note?.trim() ? item.note : 'Tap to describe what happens in this beat.'}</Text>
+                           {item.status === 'drafted' || item.status === 'expanded' ? (
+                             <Text style={[styles.cardMeta, { color: tokens.color.brand, marginTop: tokens.space[4] }]}>✓ Drafted</Text>
+                           ) : null}
+                        </Pressable>
+                      )}
+                    </View>
                   ))}
                 </View>
               ) : (
                 <View style={styles.inlineCard}>
-                  <Text style={styles.inlineCardTitle}>No chapter lanes yet</Text>
-                  <Text style={styles.inlineCardBody}>Start with the opening pressure, the next complication, and the turn. The system will keep shaping the rest as the project grows.</Text>
+                  <Text style={styles.inlineCardTitle}>No story beats yet</Text>
+                  <Text style={styles.inlineCardBody}>Add a beat below to start shaping your narrative.</Text>
+                </View>
+              )}
+
+              {!editingOutlineId && (
+                <View style={[styles.inlineCard, { borderStyle: 'dashed' }]}>
+                  <TextInput 
+                    placeholder="Add a new plot beat..."
+                    style={styles.miniInput}
+                    value={selectedShadowId === 'NEW_BEAT' ? outlineTitle : ''}
+                    onFocus={() => { setSelectedShadowId('NEW_BEAT'); setOutlineTitle(''); setOutlineNote(''); }}
+                    onChangeText={setOutlineTitle}
+                  />
+                  {selectedShadowId === 'NEW_BEAT' && (
+                    <>
+                      <TextInput 
+                        placeholder="What happens here?..."
+                        style={styles.input}
+                        multiline
+                        value={outlineNote}
+                        onChangeText={setOutlineNote}
+                      />
+                      <View style={styles.editorActions}>
+                        <Pressable style={styles.miniButton} onPress={() => {
+                          if(outlineTitle.trim()) {
+                            dispatch({ type: 'book.addOutlineItem', payload: { projectId, title: outlineTitle, note: outlineNote } });
+                            setSelectedShadowId(null);
+                            setOutlineTitle('');
+                            setOutlineNote('');
+                          }
+                        }}>
+                          <Text style={styles.miniButtonText}>Add Beat</Text>
+                        </Pressable>
+                        <Pressable style={styles.miniButtonSecondary} onPress={() => setSelectedShadowId(null)}>
+                          <Text style={styles.miniButtonTextSecondary}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    </>
+                  )}
                 </View>
               )}
             </View> : null}
@@ -610,6 +674,12 @@ const styles = StyleSheet.create({
     color: tokens.color.textMuted,
     lineHeight: 18,
   },
+  
+  miniButton: { backgroundColor: tokens.color.brand, paddingHorizontal: tokens.space[12], paddingVertical: tokens.space[8], borderRadius: tokens.radius[8], alignSelf: 'flex-start' },
+  miniButtonText: { color: tokens.color.surface, fontSize: tokens.font.size[12], fontWeight: tokens.font.weight.bold },
+  miniButtonSecondary: { backgroundColor: tokens.color.surface2, paddingHorizontal: tokens.space[12], paddingVertical: tokens.space[8], borderRadius: tokens.radius[8], alignSelf: 'flex-start', borderWidth: 1, borderColor: tokens.color.borderSubtle },
+  miniButtonTextSecondary: { color: tokens.color.textMuted, fontSize: tokens.font.size[12], fontWeight: tokens.font.weight.bold },
+
   muted: {
     fontSize: tokens.font.size[12],
     color: tokens.color.textMuted,

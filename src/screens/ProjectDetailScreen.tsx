@@ -477,7 +477,7 @@ export function ProjectDetailScreen({ route, navigation }: Props) {
                       {group.current ? (
                         <Pressable style={styles.outputCard} onPress={() => navigation.navigate('Output', { draftId: group.current!.id })}>
                           <Text style={styles.outputEyebrow}>CURRENT OUTPUT</Text>
-                          <Text style={styles.outputTitle}>{group.current.title}</Text>
+                          <Text style={styles.outputTitle}>{group.current.content?.match(/^#\s+(.*)/m)?.[1] || group.current.title}</Text>
                           <Text style={styles.outputMeta}>{`v${group.current.version} • ${formatProjectStamp(group.current.createdAt)} • ${formatCount(group.current.entryIds.length, 'entry', 'entries')}`}</Text>
                         </Pressable>
                       ) : (
@@ -528,34 +528,28 @@ export function ProjectDetailScreen({ route, navigation }: Props) {
                       return true;
                     }).length;
                     
-                    if (hiddenCount > 0) {
-                      return (
-                        <Pressable 
-                          style={styles.hiddenChaptersCard} 
-                          onPress={() => navigation.navigate('ProjectSettings', { projectId, focusSection: 'outline' })}
-                        >
-                          <Text style={styles.hiddenChaptersText}>+{hiddenCount} planned chapters coming up (Tap to map chapters)</Text>
-                        </Pressable>
-                      );
-                    }
+                    if (hiddenCount > 0) { return null; }
                     return null;
                   })()}
               </View>
 
               {unplacedDrafts.length ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyTitle}>Loose chapter outputs</Text>
-                  <Text style={styles.emptySubtitle}>These drafts are still in the project, but they are not attached to a chapter lane yet.</Text>
-                  {unplacedDrafts.slice(0, 4).map((draft) => (
-                    <ListRow
-                      key={draft.id}
-                      title={draft.title}
-                      subtitle={`v${draft.version} • ${formatProjectStamp(draft.createdAt)}`}
-                      onPress={() => navigation.navigate('Output', { draftId: draft.id })}
-                    />
-                  ))}
-                </View>
-              ) : null}
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyTitle}>Uncategorized Drafts</Text>
+                    <Text style={styles.emptySubtitle}>These drafts exist in the project but are not attached to a story beat yet.</Text>
+                    {unplacedDrafts.slice(0, 4).map((draft) => {
+                      const extractedTitle = draft.content?.match(/^#\s+(.*)/m)?.[1] || draft.title || 'Untitled Draft';
+                      return (
+                        <ListRow
+                          key={draft.id}
+                          title={extractedTitle}
+                          subtitle={`v${draft.version} • ${formatProjectStamp(draft.createdAt)}`}
+                          onPress={() => navigation.navigate('Output', { draftId: draft.id })}
+                        />
+                      );
+                    })}
+                  </View>
+                ) : null}
             </View>
           </Section>
         ) : null}
