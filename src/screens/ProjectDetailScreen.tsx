@@ -317,13 +317,13 @@ export function ProjectDetailScreen({ route, navigation }: Props) {
               onPress={() => navigation.navigate('Recording', { projectId, returnTo: 'project', targetProperty: softProbe!.field, promptLabel: softProbe!.label })}
             >
               <View style={styles.softProbeIconRing}>
-                <Ionicons name="mic-outline" size={20} color={tokens.color.accent} />
+                <Ionicons name="mic-outline" size={20} color={tokens.color.brand} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.softProbeTitle}>Missing Context</Text>
                 <Text style={styles.softProbeText}>{softProbe.label}</Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color={tokens.color.textMuted} />
+              <Ionicons name="chevron-forward" size={16} color={tokens.color.surface} />
             </Pressable>
           )}
           <View style={styles.headerCard}>
@@ -1029,9 +1029,9 @@ const styles = StyleSheet.create({
   softProbeBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1E1413',
+    backgroundColor: tokens.color.accent,
     borderWidth: 1,
-    borderColor: tokens.color.accent + '40',
+    borderColor: tokens.color.brand + '40',
     padding: tokens.space[16],
     borderRadius: tokens.radius[12],
     marginBottom: tokens.space[16],
@@ -1041,13 +1041,13 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: tokens.color.accent + '20',
+    backgroundColor: tokens.color.brand + '15',
     alignItems: 'center',
     justifyContent: 'center',
   },
   softProbeTitle: {
     fontSize: tokens.font.size[10],
-    color: tokens.color.accent,
+    color: tokens.color.brand,
     fontWeight: tokens.font.weight.bold,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -1055,7 +1055,7 @@ const styles = StyleSheet.create({
   },
   softProbeText: {
     fontSize: tokens.font.size[14],
-    color: tokens.color.text,
+    color: tokens.color.surface,
     fontWeight: tokens.font.weight.medium,
   },
 });
