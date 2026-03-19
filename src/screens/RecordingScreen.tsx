@@ -495,6 +495,7 @@ export function RecordingScreen({ navigation, route }: Props) {
   const isWeb = Platform.OS === 'web';
   const returnTo = route.params?.returnTo ?? (projectId ? 'project' : 'entry');
   const promptLabel = route.params?.promptLabel?.trim();
+  const targetProperty = route.params?.targetProperty;
   const intakeKey = route.params?.intakeKey;
   const recordingTitle = promptLabel ? makeInstantRecordingTitle({ promptLabel }) : undefined;
   const recordingIntent = intakeKey ? `intake:${intakeKey}` : undefined;
@@ -1344,6 +1345,20 @@ export function RecordingScreen({ navigation, route }: Props) {
             },
           });
           celebrateCapture();
+            if (targetProperty && project?.type === 'book' && projectId) {
+              const field = targetProperty.split('.')[1];
+              const existingBrief = project.book?.brief || { premise: '', audience: '', tone: '', constraints: '' };
+              dispatch({
+                type: 'book.setBrief',
+                payload: {
+                  projectId,
+                  brief: {
+                    ...existingBrief,
+                    [field]: result.transcript || recognizedTranscript || ''
+                  }
+                }
+              });
+            }
         } else {
           dispatch({ type: 'entry.setStatus', payload: { entryId, status: 'captured' } });
           navigation.replace('EntryDetail', { entryId, autoExtract: true });
@@ -1440,6 +1455,20 @@ export function RecordingScreen({ navigation, route }: Props) {
               },
             });
             celebrateCapture();
+            if (targetProperty && project?.type === 'book' && projectId) {
+              const field = targetProperty.split('.')[1];
+              const existingBrief = project.book?.brief || { premise: '', audience: '', tone: '', constraints: '' };
+              dispatch({
+                type: 'book.setBrief',
+                payload: {
+                  projectId,
+                  brief: {
+                    ...existingBrief,
+                    [field]: result.transcript || recognizedTranscript || ''
+                  }
+                }
+              });
+            }
           } else {
             dispatch({ type: 'entry.setStatus', payload: { entryId, status: 'captured' } });
             navigation.replace('EntryDetail', { entryId, autoExtract: true });

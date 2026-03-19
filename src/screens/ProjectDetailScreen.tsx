@@ -300,11 +300,33 @@ export function ProjectDetailScreen({ route, navigation }: Props) {
     );
   }
 
+  let softProbe: { label: string; field: 'brief.premise' | 'brief.audience' | 'brief.tone' } | null = null;
+  if (project?.type === 'book') {
+    if (!project.book?.brief?.premise) { softProbe = { label: 'Who is the main protagonist? Tap to explain.', field: 'brief.premise' }; }
+    else if (!project.book?.brief?.audience) { softProbe = { label: 'Who is this book actually for? Tap to talk it out.', field: 'brief.audience' }; }
+    else if (!project.book?.brief?.tone) { softProbe = { label: 'What is the tone or vibe? Tap to set the mood.', field: 'brief.tone' }; }
+  }
+
   return (
     <ScreenLayout title={project.name} topRight={<Pressable onPress={() => navigation.navigate('ProjectSettings', { projectId })}><Ionicons name="settings-outline" size={24} color={tokens.color.textMuted} /></Pressable>}>
       <Toast message={toastMessage} tone="success" onHide={() => setToastMessage(null)} />
       <ScrollView contentContainerStyle={styles.scroll} overScrollMode="never" bounces={false} showsVerticalScrollIndicator={false}>
-        <View style={styles.headerCard}>
+          {softProbe && (
+            <Pressable
+              style={styles.softProbeBanner}
+              onPress={() => navigation.navigate('Recording', { projectId, returnTo: 'project', targetProperty: softProbe!.field, promptLabel: softProbe!.label })}
+            >
+              <View style={styles.softProbeIconRing}>
+                <Ionicons name="mic-outline" size={20} color={tokens.color.accent} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.softProbeTitle}>Missing Context</Text>
+                <Text style={styles.softProbeText}>{softProbe.label}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={tokens.color.textMuted} />
+            </Pressable>
+          )}
+          <View style={styles.headerCard}>
           <View style={styles.headerTopRow}>
             <View style={styles.typePill}>
               <Text style={styles.typePillText}>{project.type === 'book' ? 'Book' : 'Project'}</Text>
@@ -1002,6 +1024,38 @@ const styles = StyleSheet.create({
   hiddenChaptersText: {
     color: tokens.color.textMuted,
     fontSize: tokens.font.size[14],
+    fontWeight: tokens.font.weight.medium,
+  },
+  softProbeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E1413',
+    borderWidth: 1,
+    borderColor: tokens.color.accent + '40',
+    padding: tokens.space[16],
+    borderRadius: tokens.radius[12],
+    marginBottom: tokens.space[16],
+    gap: tokens.space[12],
+  },
+  softProbeIconRing: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: tokens.color.accent + '20',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  softProbeTitle: {
+    fontSize: tokens.font.size[10],
+    color: tokens.color.accent,
+    fontWeight: tokens.font.weight.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: tokens.space[4],
+  },
+  softProbeText: {
+    fontSize: tokens.font.size[14],
+    color: tokens.color.text,
     fontWeight: tokens.font.weight.medium,
   },
 });

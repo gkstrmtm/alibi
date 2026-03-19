@@ -9,6 +9,7 @@ export type RootStackParamList = {
         returnTo?: 'entry' | 'project' | 'studio' | 'output';
         intakeKey?: 'make' | 'forWho' | 'rules';
         promptLabel?: string;
+        targetProperty?: 'brief.premise' | 'brief.audience' | 'brief.tone';
       }
     | undefined;
   TypeNote:
