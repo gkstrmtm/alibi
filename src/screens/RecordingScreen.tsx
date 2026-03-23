@@ -1,16 +1,17 @@
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Animated, Easing, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
-import { analyzeLiveSession, extractEntry, type LiveSessionSignal } from '../api/alibiApi';
+import { analyzeLiveSession, extractEntry, type LiveSessionSignal, analyzeLiveSessionVoice, generateReadbackAudio, prepareReadbackAudio } from '../api/alibiApi';
 import type { RootStackParamList } from '../navigation/types';
 import { ScribbleMic } from '../components/ScribbleMic';
-import { LinearGradient } from 'expo-linear-gradient';
 import { ScreenLayout } from '../components/ScreenLayout';
 import { Toast } from '../components/Toast';
+import { buildProjectProfiles, deriveCaptureContext } from '../intelligence/recordingIntelligence';
 import { getLayoutMetrics } from '../theme/layout';
 import { tokens } from '../theme/tokens';
 import { useAppStore } from '../store/store';
@@ -19,6 +20,7 @@ import { estimateVoiceDurationSecFromTranscript } from '../utils/entryDuration';
 import { triggerMediumFeedback, triggerSoftFeedback, triggerSuccessFeedback } from '../utils/feedback';
 import { makeId } from '../utils/id';
 import { readFileAsBase64 } from '../utils/fileAccess';
+import { goBackOrNavigate, recordingFallback } from '../utils/navigation';
 import { playFeedbackSound } from '../utils/soundFeedback';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Recording'>;
@@ -51,6 +53,8 @@ type ProjectContextFrame = {
   canon?: string[];
   currentDraftTitle?: string;
   latestDraftTitle?: string;
+  recentGlobalEntries?: string[];
+  recentProjects?: string[];
 };
 
 type QuestionPlan = {
@@ -468,7 +472,7 @@ function isSpeechRequestConflictError(error: unknown) {
       ? (error as any).message
       : '';
 
-  return /another request is active|request is active|recognizer busy|already started|audio.*active|busy/i.test(message);
+  return /another request is active|another request is started|request is active|recognizer busy|already started|audio.*active|busy/i.test(message);
 }
 
 function getErrorMessage(error: unknown) {
@@ -482,7 +486,122 @@ function isIgnorableSpeechMessage(error: unknown) {
   const message = getErrorMessage(error).trim().toLowerCase();
   if (!message) return false;
 
-  return /\babort(ed)?\b|cancelled|canceled|no-speech|no speech|interrupted|speech.*ended|recognition.*ended/.test(message);
+  return /\babort(ed)?\b|cancelled|canceled|no-speech|no speech|interrupted|speech.*ended|recognition.*ended|another request is started|another request is active|request is active|already started|recognizer busy/.test(message);
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+
+  return Math.abs(hash).toString(36);
+}
+
+function mimeTypeToExtension(mimeType: string) {
+  if (mimeType.includes('mpeg')) return 'mp3';
+  if (mimeType.includes('wav')) return 'wav';
+  if (mimeType.includes('aac')) return 'aac';
+  if (mimeType.includes('ogg')) return 'ogg';
+  return 'mp4';
+}
+
+function pushUint16(bytes: number[], value: number) {
+  bytes.push(value & 0xff, (value >> 8) & 0xff);
+}
+
+function pushUint32(bytes: number[], value: number) {
+  bytes.push(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >> 24) & 0xff);
+}
+
+function encodeBase64(bytes: number[]) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let output = '';
+
+  for (let index = 0; index < bytes.length; index += 3) {
+    const byte1 = bytes[index] ?? 0;
+    const byte2 = bytes[index + 1] ?? 0;
+    const byte3 = bytes[index + 2] ?? 0;
+    const chunk = (byte1 << 16) | (byte2 << 8) | byte3;
+
+    output += chars[(chunk >> 18) & 63];
+    output += chars[(chunk >> 12) & 63];
+    output += index + 1 < bytes.length ? chars[(chunk >> 6) & 63] : '=';
+    output += index + 2 < bytes.length ? chars[chunk & 63] : '=';
+  }
+
+  return output;
+}
+
+function createSilentAudioUri(durationMs = 90) {
+  const sampleRate = 22050;
+  const sampleCount = Math.max(1, Math.floor((durationMs / 1000) * sampleRate));
+  const samples: number[] = [];
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    pushUint16(samples, 0);
+  }
+
+  const header: number[] = [];
+  header.push(...Array.from('RIFF').map((char) => char.charCodeAt(0)));
+  pushUint32(header, 36 + samples.length);
+  header.push(...Array.from('WAVE').map((char) => char.charCodeAt(0)));
+  header.push(...Array.from('fmt ').map((char) => char.charCodeAt(0)));
+  pushUint32(header, 16);
+  pushUint16(header, 1);
+  pushUint16(header, 1);
+  pushUint32(header, sampleRate);
+  pushUint32(header, sampleRate * 2);
+  pushUint16(header, 2);
+  pushUint16(header, 16);
+  header.push(...Array.from('data').map((char) => char.charCodeAt(0)));
+  pushUint32(header, samples.length);
+
+  return `data:audio/wav;base64,${encodeBase64([...header, ...samples])}`;
+}
+
+async function persistBase64AudioToCache(cacheKey: string, audioBase64: string, mimeType: string) {
+  const cacheDirectory = (FileSystem as any).cacheDirectory as string | null | undefined;
+
+  if (Platform.OS === 'web' || !cacheDirectory) {
+    return `data:${mimeType};base64,${audioBase64}`;
+  }
+
+  const directoryUri = `${cacheDirectory}live-voice/`;
+  await FileSystem.makeDirectoryAsync(directoryUri, { intermediates: true }).catch(() => {});
+
+  const fileUri = `${directoryUri}${hashString(cacheKey)}.${mimeTypeToExtension(mimeType)}`;
+  const fileInfo = await FileSystem.getInfoAsync(fileUri).catch(() => ({ exists: false }));
+  if (!fileInfo.exists) {
+    await FileSystem.writeAsStringAsync(fileUri, audioBase64, { encoding: (FileSystem as any).EncodingType.Base64 });
+  }
+
+  return fileUri;
+}
+
+function createWebAudioUrl(audioBase64: string, mimeType: string) {
+  const cleaned = audioBase64.includes('base64,') ? audioBase64.slice(audioBase64.indexOf('base64,') + 'base64,'.length) : audioBase64;
+
+  try {
+    const atobFn = (globalThis as any)?.atob;
+    const BlobCtor = (globalThis as any)?.Blob;
+    const URLCtor = (globalThis as any)?.URL;
+
+    if (typeof atobFn === 'function' && typeof BlobCtor === 'function' && typeof URLCtor?.createObjectURL === 'function') {
+      const binary = atobFn(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      return URLCtor.createObjectURL(new BlobCtor([bytes], { type: mimeType }));
+    }
+  } catch {
+    // fall back to data URI below
+  }
+
+  return `data:${mimeType};base64,${cleaned}`;
 }
 
 export function RecordingScreen({ navigation, route }: Props) {
@@ -501,6 +620,7 @@ export function RecordingScreen({ navigation, route }: Props) {
   const recordingIntent = intakeKey ? `intake:${intakeKey}` : undefined;
   const project = projectId ? state.projects[projectId] : undefined;
   const projectName = projectId ? state.projects[projectId]?.name : undefined;
+  const backTarget = recordingFallback(route.params);
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -511,39 +631,77 @@ export function RecordingScreen({ navigation, route }: Props) {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [meter01, setMeter01] = useState<number>(0);
-  const [displayMeter01, setDisplayMeter01] = useState<number>(0);
-  const [liveSignals, setLiveSignals] = useState<DisplayedSignal[]>([]);
   const [liveTranscript, setLiveTranscript] = useState('');
-  const [liveSummary, setLiveSummary] = useState('');
-  const [liveTakeaways, setLiveTakeaways] = useState<string[]>([]);
+  const [analysisTranscript, setAnalysisTranscript] = useState('');
+  const [hasCapturedSpeech, setHasCapturedSpeech] = useState(false);
   const [isLiveThinking, setIsLiveThinking] = useState(false);
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isAgentMuted, setIsAgentMuted] = useState(false);
   const [liveSignalError, setLiveSignalError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [displayedSignal, setDisplayedSignal] = useState<DisplayedSignal | null>(null);
+  const [lastHeardSnippet, setLastHeardSnippet] = useState('');
+  const [lastAgentReply, setLastAgentReply] = useState('');
+  const [agentPlaybackState, setAgentPlaybackState] = useState<'idle' | 'generating' | 'playing' | 'blocked' | 'error'>('idle');
 
   const pulse = useRef(new Animated.Value(0)).current;
   const level = useRef(new Animated.Value(0)).current;
-  const signalSwap = useRef(new Animated.Value(1)).current;
-  const lastGuideStepRef = useRef(0);
+  const windup = useRef(new Animated.Value(0)).current;
   const transcriptTallyRef = useRef('');
-  const lastLiveWordCountRef = useRef(0);
   const lastApiSignalAtRef = useRef(0);
-  const lastQuestionAtRef = useRef(0);
-  const recentQuestionCategoriesRef = useRef<QuestionCategory[]>([]);
+  const agentSoundRef = useRef<Audio.Sound | null>(null);
+  const webAgentAudioRef = useRef<any>(null);
+  const webAgentAudioUrlRef = useRef<string | null>(null);
+  const webAudioUnlockedRef = useRef(false);
+  const agentAudioPrimedRef = useRef(false);
+  const voicePreflightStateRef = useRef<'idle' | 'checking' | 'ready' | 'failed'>('idle');
   const speechPermissionGrantedRef = useRef(false);
   const speechRecognitionActiveRef = useRef(false);
   const speechTransitionRef = useRef(false);
   const liveSpeechDisabledRef = useRef(false);
+  const liveVoiceAbortRef = useRef<AbortController | null>(null);
+  const agentPlaybackAbortRef = useRef<AbortController | null>(null);
   const speechShouldRunRef = useRef(false);
   const passiveCommandModeRef = useRef(false);
   const commandLockRef = useRef(false);
-  const hearingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activityStepRef = useRef(0);
-  const [isHearingNow, setIsHearingNow] = useState(false);
+  const lastMeterPushAtRef = useRef(0);
+  const meterValueRef = useRef(0);
+  const liveTranscriptRef = useRef('');
+  const transcriptFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const analysisTranscriptTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasPlayedStartIntroRef = useRef(false);
   const hasSession = isWeb ? isRecording || isStopping || elapsedSec > 0 : Boolean(recording);
+  const replyWordThreshold = 3;
+  const replySettleDelayMs = 280;
+  const replySilenceDelayMs = 900;
+  const replyCooldownMs = 1200;
+  const captureContext = useMemo(() => deriveCaptureContext(projectId, draftId), [draftId, projectId]);
+  const projectProfiles = useMemo(() => buildProjectProfiles(state), [state]);
 
   const projectContext = useMemo(() => {
-    if (!project) return undefined;
+    if (!project) {
+      const recentGlobalEntries = Object.values(state.entries)
+        .filter((entry): entry is NonNullable<typeof state.entries[string]> => Boolean(entry && entry.status === 'extracted'))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 3)
+        .map((e) => e.title ?? '')
+        .filter(Boolean);
+
+      const recentProjects = Object.values(state.projects)
+        .filter((p): p is NonNullable<typeof state.projects[string]> => Boolean(p))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 3)
+        .map((p) => p.name ?? '')
+        .filter(Boolean);
+
+      if (!recentGlobalEntries.length && !recentProjects.length) return undefined;
+
+      return {
+        recentGlobalEntries,
+        recentProjects,
+      };
+    }
 
     const projectDrafts = (project.draftIds ?? [])
       .map((id) => state.drafts[id])
@@ -588,17 +746,60 @@ export function RecordingScreen({ navigation, route }: Props) {
     }
   }, [navigation, state.auth.status]);
 
+  function updateMeter(nextValue: number, options?: { force?: boolean }) {
+    const clamped = Math.max(0, Math.min(1, nextValue));
+    const now = Date.now();
+    const force = Boolean(options?.force);
+    meterValueRef.current = clamped;
+
+    setMeter01((current) => {
+      if (!force && now - lastMeterPushAtRef.current < 90 && Math.abs(current - clamped) < 0.06) {
+        return current;
+      }
+
+      lastMeterPushAtRef.current = now;
+      return clamped;
+    });
+  }
+
   function markHeard(baseLevel = 0.42) {
     activityStepRef.current = (activityStepRef.current + 1) % 4;
     const offsets = [0.1, 0.2, 0.14, 0.24];
     const nextOffset = offsets[activityStepRef.current] ?? 0.1;
     const nextLevel = Math.min(1, baseLevel + nextOffset);
 
-    setMeter01((current) => Math.max(current * 0.55, nextLevel));
-    setIsHearingNow(true);
+    updateMeter(Math.max(meterValueRef.current * 0.55, nextLevel));
+  }
 
-    if (hearingTimeoutRef.current) clearTimeout(hearingTimeoutRef.current);
-    hearingTimeoutRef.current = setTimeout(() => setIsHearingNow(false), 1300);
+  function flushLiveTranscript(options?: { immediate?: boolean }) {
+    const nextTranscript = liveTranscriptRef.current;
+
+    if (options?.immediate && transcriptFlushTimeoutRef.current) {
+      clearTimeout(transcriptFlushTimeoutRef.current);
+      transcriptFlushTimeoutRef.current = null;
+    }
+
+    if (nextTranscript.trim()) {
+      setHasCapturedSpeech(true);
+    }
+
+    setLiveTranscript((current) => (current === nextTranscript ? current : nextTranscript));
+  }
+
+  function queueLiveTranscript(nextTranscript: string, options?: { immediate?: boolean }) {
+    liveTranscriptRef.current = nextTranscript;
+
+    if (options?.immediate) {
+      flushLiveTranscript({ immediate: true });
+      return;
+    }
+
+    if (transcriptFlushTimeoutRef.current) return;
+
+    transcriptFlushTimeoutRef.current = setTimeout(() => {
+      transcriptFlushTimeoutRef.current = null;
+      flushLiveTranscript();
+    }, 180);
   }
 
   async function requestSpeechPermissionIfNeeded() {
@@ -676,6 +877,428 @@ export function RecordingScreen({ navigation, route }: Props) {
       });
   }
 
+  async function setConversationAudioMode(mode: 'record' | 'playback') {
+    if (isWeb) return;
+
+    if (mode === 'record') {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+      });
+      return;
+    }
+
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      shouldDuckAndroid: true,
+    });
+  }
+
+  async function unloadAgentSound() {
+    const activeWebAudioUrl = webAgentAudioUrlRef.current;
+    webAgentAudioUrlRef.current = null;
+    if (activeWebAudioUrl?.startsWith('blob:')) {
+      try {
+        (globalThis as any)?.URL?.revokeObjectURL?.(activeWebAudioUrl);
+      } catch {
+        // ignore object URL cleanup failures
+      }
+    }
+
+    const activeWebAudio = webAgentAudioRef.current;
+    webAgentAudioRef.current = null;
+    if (activeWebAudio) {
+      try {
+        activeWebAudio.pause?.();
+        activeWebAudio.onended = null;
+        activeWebAudio.onerror = null;
+        activeWebAudio.src = '';
+        activeWebAudio.load?.();
+      } catch {
+        // ignore browser audio cleanup failures
+      }
+    }
+
+    const activeSound = agentSoundRef.current;
+    agentSoundRef.current = null;
+    if (!activeSound) return;
+
+    try {
+      activeSound.setOnPlaybackStatusUpdate(null);
+    } catch {
+      // ignore callback reset failures
+    }
+
+    try {
+      await activeSound.stopAsync();
+    } catch {
+      // ignore stop failures
+    }
+
+    try {
+      await activeSound.unloadAsync();
+    } catch {
+      // ignore unload failures
+    }
+  }
+
+  async function resumeLiveCaptureAfterAgent() {
+    setIsAgentSpeaking(false);
+    setAgentPlaybackState((current) => (current === 'blocked' || current === 'error' ? current : 'idle'));
+    speechTransitionRef.current = false;
+    
+    setAnalysisTranscript('');
+    setLiveTranscript('');
+    liveTranscriptRef.current = '';
+    transcriptTallyRef.current = '';
+
+    if (isMicMuted) return;
+
+    try {
+      await setConversationAudioMode('record');
+      if (!isWeb && recordingRef.current) {
+        await recordingRef.current.startAsync().catch(() => {});
+      }
+
+      if (!liveSpeechDisabledRef.current) {
+        speechShouldRunRef.current = true;
+        await startSpeechRecognitionSession({ allowBusyFailure: true, disableLiveOnFailure: true });
+      }
+
+      setIsRecording(true);
+    } catch (e: any) {
+      setToastMessage(e?.message || 'Mic could not resume.');
+    }
+  }
+
+  async function playAgentResponse(text: string) {
+    if (!text.trim() || isAgentMuted) return;
+
+    setLastAgentReply(text.trim());
+    setAgentPlaybackState('generating');
+
+    agentPlaybackAbortRef.current?.abort();
+    const playbackController = new AbortController();
+    agentPlaybackAbortRef.current = playbackController;
+
+    const audioRes = await generateReadbackAudio(
+      { text, render: 'spoken' },
+      { baseUrl: state.settings.apiBaseUrlOverride, signal: playbackController.signal },
+    );
+
+    if (playbackController.signal.aborted) {
+      setAgentPlaybackState('idle');
+      return;
+    }
+
+    if (!audioRes.ok) {
+      voicePreflightStateRef.current = 'failed';
+      setAgentPlaybackState('error');
+      setToastMessage(audioRes.error || 'Failed to generate voice response.');
+      return;
+    }
+
+    speechTransitionRef.current = true;
+    setIsAgentSpeaking(true);
+    setIsRecording(false);
+
+    await stopSpeechRecognitionSession();
+
+    if (!isWeb && recordingRef.current) {
+      await recordingRef.current.pauseAsync().catch(() => {});
+    }
+
+    try {
+      await setConversationAudioMode('playback');
+      await unloadAgentSound();
+
+      if (isWeb) {
+        const BrowserAudio = (globalThis as any)?.Audio;
+        if (typeof BrowserAudio !== 'function') {
+          throw new Error('Browser audio is unavailable.');
+        }
+
+        const audioUri = createWebAudioUrl(audioRes.audioBase64, audioRes.mimeType);
+        webAgentAudioUrlRef.current = audioUri;
+        const browserAudio = new BrowserAudio(audioUri);
+        browserAudio.preload = 'auto';
+        browserAudio.playsInline = true;
+        browserAudio.muted = false;
+        browserAudio.volume = 1;
+        webAgentAudioRef.current = browserAudio;
+
+        browserAudio.onended = () => {
+          void unloadAgentSound().finally(() => {
+            void resumeLiveCaptureAfterAgent();
+          });
+        };
+
+        browserAudio.onerror = () => {
+          setAgentPlaybackState('error');
+          setToastMessage('Voice playback failed.');
+          void unloadAgentSound().finally(() => {
+            void resumeLiveCaptureAfterAgent();
+          });
+        };
+
+        try {
+          await browserAudio.play();
+          webAudioUnlockedRef.current = true;
+          setAgentPlaybackState('playing');
+          return;
+        } catch (e: any) {
+          setAgentPlaybackState('blocked');
+          throw new Error(e?.message || 'Browser blocked voice playback.');
+        }
+      }
+
+      const audioUri = await persistBase64AudioToCache(`live:${text}`, audioRes.audioBase64, audioRes.mimeType);
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: audioUri },
+        { shouldPlay: true, progressUpdateIntervalMillis: 200 },
+      );
+
+      agentSoundRef.current = sound;
+      setAgentPlaybackState('playing');
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) {
+          if ((status as any).error) {
+            voicePreflightStateRef.current = 'failed';
+            setAgentPlaybackState('error');
+            setToastMessage('Voice playback failed.');
+            void unloadAgentSound().finally(() => {
+              void resumeLiveCaptureAfterAgent();
+            });
+          }
+          return;
+        }
+
+        if (status.didJustFinish) {
+          void unloadAgentSound().finally(() => {
+            void resumeLiveCaptureAfterAgent();
+          });
+        }
+      });
+    } catch (e: any) {
+      await unloadAgentSound();
+      voicePreflightStateRef.current = 'failed';
+      setAgentPlaybackState((current) => (current === 'blocked' ? current : 'error'));
+      setToastMessage(e?.message || 'Voice playback failed.');
+      await resumeLiveCaptureAfterAgent();
+    }
+  }
+
+  async function playStartIntro() {
+    if (hasPlayedStartIntroRef.current || isAgentMuted) return;
+
+    hasPlayedStartIntroRef.current = true;
+    setAnalysisTranscript('');
+    setLiveTranscript('');
+    liveTranscriptRef.current = '';
+    transcriptTallyRef.current = '';
+
+    try {
+      const kickoffPrompt = promptLabel
+        ? `Start with this: ${promptLabel.replace(/\s+/g, ' ').trim()}`.slice(0, 180)
+        : "I'm here. Start talking whenever you're ready.";
+      await playAgentResponse(kickoffPrompt);
+    } catch (e: any) {
+      setToastMessage(e?.message || 'Voice intro failed.');
+    }
+  }
+
+  async function primeAgentAudioOutput() {
+    if (agentAudioPrimedRef.current) return;
+
+    if (isWeb) {
+      const BrowserAudio = (globalThis as any)?.Audio;
+      if (typeof BrowserAudio !== 'function') {
+        return;
+      }
+
+      try {
+        const browserAudio = new BrowserAudio(createSilentAudioUri());
+        browserAudio.muted = true;
+        browserAudio.playsInline = true;
+        await browserAudio.play();
+        browserAudio.pause();
+        browserAudio.currentTime = 0;
+        browserAudio.muted = false;
+        webAudioUnlockedRef.current = true;
+        agentAudioPrimedRef.current = true;
+      } catch {
+        // Browser may still require another user gesture later.
+      }
+
+      return;
+    }
+
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: createSilentAudioUri() },
+        { shouldPlay: true, volume: 0 },
+      );
+
+      try {
+        await sound.stopAsync();
+      } catch {
+        // ignore
+      }
+
+      await sound.unloadAsync().catch(() => {});
+      agentAudioPrimedRef.current = true;
+    } catch {
+      // If priming fails, real playback can still try later.
+    }
+  }
+
+  async function replayLastAgentVoice() {
+    if (!lastAgentReply.trim() || isAgentMuted || isStarting || isStopping || isAgentSpeaking) return;
+
+    try {
+      await primeAgentAudioOutput();
+      await playAgentResponse(lastAgentReply);
+    } catch (e: any) {
+      setToastMessage(e?.message || 'Voice playback failed.');
+    }
+  }
+
+  async function runVoicePreflight() {
+    if (isAgentMuted || voicePreflightStateRef.current === 'checking' || voicePreflightStateRef.current === 'ready') {
+      return;
+    }
+
+    voicePreflightStateRef.current = 'checking';
+
+    try {
+      const voiceResult = await analyzeLiveSessionVoice(
+        { recentTranscript: 'I am starting a live voice conversation now.' },
+        { baseUrl: state.settings.apiBaseUrlOverride },
+      );
+
+      if (!voiceResult.ok) {
+        throw new Error(voiceResult.error);
+      }
+
+      const prepResult = await prepareReadbackAudio(
+        { text: voiceResult.speechResponse || 'Voice mode is ready.', render: 'spoken' },
+        { baseUrl: state.settings.apiBaseUrlOverride },
+      );
+
+      if (!prepResult.ok) {
+        throw new Error(prepResult.error);
+      }
+
+      voicePreflightStateRef.current = 'ready';
+    } catch (e: any) {
+      voicePreflightStateRef.current = 'failed';
+      setToastMessage(e?.message || 'Voice replies are unavailable right now.');
+    }
+  }
+
+  async function toggleMicMute() {
+    if (!hasSession || isStarting || isStopping) return;
+
+    if (isMicMuted) {
+      setIsMicMuted(false);
+
+      if (isAgentSpeaking) {
+        return;
+      }
+
+      try {
+        await setConversationAudioMode('record');
+        if (!isWeb && recordingRef.current) {
+          await recordingRef.current.startAsync();
+        }
+        if (!liveSpeechDisabledRef.current) {
+          speechShouldRunRef.current = true;
+          await startSpeechRecognitionSession({ allowBusyFailure: true, disableLiveOnFailure: true });
+        }
+        setIsRecording(true);
+      } catch (e: any) {
+        setIsMicMuted(true);
+        setToastMessage(e?.message || 'Mic could not resume.');
+      }
+
+      return;
+    }
+
+    setIsMicMuted(true);
+
+    if (isAgentSpeaking) {
+      return;
+    }
+
+    setIsRecording(false);
+    speechShouldRunRef.current = false;
+    await stopSpeechRecognitionSession();
+    if (!isWeb && recordingRef.current) {
+      await recordingRef.current.pauseAsync().catch(() => {});
+    }
+  }
+
+  async function toggleAgentMute() {
+    const nextMuted = !isAgentMuted;
+    setIsAgentMuted(nextMuted);
+
+    if (!nextMuted) {
+      voicePreflightStateRef.current = 'idle';
+      void runVoicePreflight();
+      return;
+    }
+
+    liveVoiceAbortRef.current?.abort();
+    liveVoiceAbortRef.current = null;
+    agentPlaybackAbortRef.current?.abort();
+    agentPlaybackAbortRef.current = null;
+    await unloadAgentSound();
+
+    if (isAgentSpeaking) {
+      await resumeLiveCaptureAfterAgent();
+    }
+  }
+
+  async function handleExit() {
+    if (hasSession) {
+      await stopRecording();
+      return;
+    }
+
+    goBackOrNavigate(navigation, backTarget);
+  }
+
+  async function handleDiscard() {
+    if (!hasSession) return;
+    setIsStopping(true);
+    try {
+      liveVoiceAbortRef.current?.abort();
+      liveVoiceAbortRef.current = null;
+      agentPlaybackAbortRef.current?.abort();
+      agentPlaybackAbortRef.current = null;
+      await unloadAgentSound();
+      setIsAgentSpeaking(false);
+      speechShouldRunRef.current = false;
+      await stopSpeechRecognitionSession();
+      if (!isWeb && recordingRef.current) {
+        await recordingRef.current.stopAndUnloadAsync().catch(() => {});
+      }
+      setRecording(null);
+      recordingRef.current = null;
+      setIsRecording(false);
+      
+      triggerMediumFeedback();
+      goBackOrNavigate(navigation, backTarget);
+    } catch {
+      goBackOrNavigate(navigation, backTarget);
+    } finally {
+      setIsStopping(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -694,10 +1317,7 @@ export function RecordingScreen({ navigation, route }: Props) {
           return;
         }
 
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-        });
+        await setConversationAudioMode('record');
 
         if (cancelled) return;
         setIsReady(true);
@@ -711,7 +1331,16 @@ export function RecordingScreen({ navigation, route }: Props) {
       speechShouldRunRef.current = false;
       passiveCommandModeRef.current = false;
       liveSpeechDisabledRef.current = false;
-      if (hearingTimeoutRef.current) clearTimeout(hearingTimeoutRef.current);
+      if (transcriptFlushTimeoutRef.current) {
+        clearTimeout(transcriptFlushTimeoutRef.current);
+        transcriptFlushTimeoutRef.current = null;
+      }
+      if (analysisTranscriptTimeoutRef.current) {
+        clearTimeout(analysisTranscriptTimeoutRef.current);
+        analysisTranscriptTimeoutRef.current = null;
+      }
+      liveVoiceAbortRef.current?.abort();
+      void unloadAgentSound();
       void stopSpeechRecognitionSession();
       if (recordingRef.current) recordingRef.current.stopAndUnloadAsync().catch(() => {});
     };
@@ -722,14 +1351,45 @@ export function RecordingScreen({ navigation, route }: Props) {
   useEffect(() => {
     speechShouldRunRef.current = isRecording && !isStopping;
 
-    if (!isRecording) {
-      setIsHearingNow(false);
-      if (hearingTimeoutRef.current) {
-        clearTimeout(hearingTimeoutRef.current);
-        hearingTimeoutRef.current = null;
-      }
+    if (!isRecording && transcriptFlushTimeoutRef.current) {
+      clearTimeout(transcriptFlushTimeoutRef.current);
+      transcriptFlushTimeoutRef.current = null;
+    }
+
+    if (!isRecording && analysisTranscriptTimeoutRef.current) {
+      clearTimeout(analysisTranscriptTimeoutRef.current);
+      analysisTranscriptTimeoutRef.current = null;
     }
   }, [isRecording, isStopping]);
+
+  useEffect(() => {
+    if (analysisTranscriptTimeoutRef.current) {
+      clearTimeout(analysisTranscriptTimeoutRef.current);
+      analysisTranscriptTimeoutRef.current = null;
+    }
+
+    if (!isRecording) {
+      setAnalysisTranscript('');
+      return;
+    }
+
+    if (!liveTranscript.trim()) {
+      setAnalysisTranscript('');
+      return;
+    }
+
+    analysisTranscriptTimeoutRef.current = setTimeout(() => {
+      analysisTranscriptTimeoutRef.current = null;
+      setAnalysisTranscript((current) => (current === liveTranscript ? current : liveTranscript));
+    }, replySettleDelayMs);
+
+    return () => {
+      if (analysisTranscriptTimeoutRef.current) {
+        clearTimeout(analysisTranscriptTimeoutRef.current);
+        analysisTranscriptTimeoutRef.current = null;
+      }
+    };
+  }, [isRecording, liveTranscript]);
 
   useEffect(() => {
     if (!isReady || isStarting || isStopping) return;
@@ -762,14 +1422,14 @@ export function RecordingScreen({ navigation, route }: Props) {
       Animated.sequence([
         Animated.timing(pulse, {
           toValue: 1,
-          duration: 1200,
-          easing: Easing.out(Easing.quad),
+          duration: 2600,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
         Animated.timing(pulse, {
           toValue: 0,
-          duration: 1200,
-          easing: Easing.in(Easing.quad),
+          duration: 2600,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
       ]),
@@ -780,133 +1440,63 @@ export function RecordingScreen({ navigation, route }: Props) {
   }, [isRecording, pulse]);
 
   useEffect(() => {
-    Animated.timing(level, {
-      toValue: displayMeter01,
-      duration: 120,
-      easing: Easing.out(Easing.quad),
+    const floor = isRecording ? (hasCapturedSpeech ? 0.08 : 0.045) : 0;
+    const target = isRecording ? Math.max(meter01, floor) : 0;
+
+    Animated.spring(level, {
+      toValue: target,
+      stiffness: 180,
+      damping: 26,
+      mass: 1,
       useNativeDriver: true,
     }).start();
-  }, [displayMeter01, level]);
+  }, [hasCapturedSpeech, isRecording, level, meter01]);
 
   useEffect(() => {
     if (!isRecording) {
-      setMeter01(0);
+      updateMeter(0, { force: true });
       return;
     }
 
     const id = setInterval(() => {
       setMeter01((current) => {
-        if (current <= 0.02) return 0;
-        return Math.max(0, current * 0.82 - 0.01);
+        if (current <= 0.03) {
+          meterValueRef.current = 0;
+          lastMeterPushAtRef.current = Date.now();
+          return 0;
+        }
+
+        const next = Math.max(0, current * 0.84 - 0.015);
+        if (Math.abs(next - current) < 0.035) {
+          meterValueRef.current = current;
+          return current;
+        }
+
+        meterValueRef.current = next;
+        lastMeterPushAtRef.current = Date.now();
+        return next;
       });
-    }, 70);
+    }, 120);
 
     return () => clearInterval(id);
   }, [isRecording]);
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      setDisplayMeter01((current) => {
-        const floor = isRecording ? (wordsIn(liveTranscript) > 0 ? 0.1 : 0.05) : 0;
-        const target = isRecording ? Math.max(meter01, floor) : 0;
-        const easing = target > current ? 0.38 : isRecording ? 0.14 : 0.2;
-        const next = current + (target - current) * easing;
-        return Math.abs(next - target) < 0.008 ? target : next;
-      });
-    }, 50);
-
-    return () => clearInterval(id);
-  }, [isRecording, liveTranscript, meter01]);
-
-  const status = useMemo(() => {
-    if (error) return 'Mic error';
-    if (isStopping) return 'Analyzing…';
-    if (!isReady) return 'Starting…';
-    if (isStarting) return 'Starting…';
-    if (!hasSession) return 'Ready';
-    return isRecording ? 'Recording' : 'Paused';
-  }, [error, hasSession, isReady, isRecording, isStarting, isStopping]);
-
   const ringScale = pulse.interpolate({
     inputRange: [0, 1],
-    outputRange: [1, 1.4],
+    outputRange: [1, 1.24],
   });
 
   const ringOpacity = pulse.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.4, 0],
+    outputRange: [0.22, 0],
   });
 
   const coreScale = level.interpolate({
     inputRange: [0, 1],
-    outputRange: [1, 1.08],
+    outputRange: [1, 1.035],
   });
 
   const visualSize = Math.min(metrics.contentWidth * 0.68, metrics.immersiveHeroHeight * 0.55);
-  const latestLiveSignal = liveSignals[0];
-  const liveLane = useMemo(
-    () =>
-      deriveLiveLane({
-        transcript: liveTranscript,
-        runningSummary: liveSummary,
-        recentTakeaways: liveTakeaways,
-        projectContext,
-      }),
-    [liveSummary, liveTakeaways, liveTranscript, projectContext],
-  );
-  const interviewState = useMemo(
-    () => deriveInterviewState({ transcript: liveTranscript, runningSummary: liveSummary, lane: liveLane }),
-    [liveLane, liveSummary, liveTranscript],
-  );
-  const questionPlan = useMemo(
-    () => deriveQuestionPlan({ elapsedSec, lane: liveLane, interviewState, projectContext, recentCategories: recentQuestionCategoriesRef.current }),
-    [elapsedSec, interviewState, liveLane, projectContext],
-  );
-  const hasMicSignal = isRecording && (isHearingNow || displayMeter01 > 0.14);
-  const micStatusText = !hasSession
-    ? 'Mic standing by'
-    : isRecording
-      ? hasMicSignal
-        ? 'Voice is coming through'
-        : 'Listening for signal'
-      : 'Session paused';
-
-  const livePanelMeta = isLiveThinking ? 'Working' : liveLane?.stability && liveLane.stability >= 0.58 ? 'Theme locked' : interviewState.coveredDimensions.length ? 'Building interview map' : latestLiveSignal ? 'Fresh cue' : isRecording ? 'Listening' : 'Standby';
-
-  const topStatus = !hasSession ? 'Voice capture' : isRecording ? 'Session live' : 'Session paused';
-
-  const hint = useMemo(() => {
-    if (!hasSession) return 'Begin when the thought is there.';
-    if (isStopping) return 'Wrapping the pass and pulling the readback together.';
-    if (isRecording) {
-      if (elapsedSec >= 30) return 'Stay with the turn. Stop when the thought has actually landed.';
-      if (elapsedSec >= 15) return 'You are in it now. Keep going until the point feels sharp.';
-      return 'Talk it through naturally.';
-    }
-    return 'Pick it back up, or stop and let it resolve.';
-  }, [elapsedSec, hasSession, isRecording, isStopping]);
-
-  const sessionTitle = promptLabel ? 'Voice answer' : projectName ? `Recording into ${projectName}` : 'Open capture';
-  const sessionSubtitle = promptLabel
-    ? promptLabel
-    : projectName
-      ? 'This folds straight into the project while you talk.'
-      : 'Catch the thought now. Shape it later.';
-  const captureContextTitle = draftId
-    ? `For ${state.drafts[draftId]?.title ?? 'this draft'}`
-    : projectName
-      ? `For ${projectName}`
-      : undefined;
-  const captureContextNote = draftId
-    ? projectName
-      ? `This note comes back to the draft room and stays inside ${projectName}.`
-      : 'This note comes back to the draft room when you finish.'
-    : projectName
-      ? 'This capture will feed the whole project, not just one draft.'
-      : undefined;
-  const handsFreeHint = !hasSession
-    ? 'Hands-free ready: say “Alibi start recording.”'
-    : 'Hands-free ready: say “Alibi stop recording.”';
   const captureState: 'idle' | 'listening' | 'recording' | 'processing' = isStopping
     ? 'processing'
     : hasSession
@@ -914,18 +1504,28 @@ export function RecordingScreen({ navigation, route }: Props) {
         ? 'recording'
         : 'listening'
       : 'idle';
-  const captureStateLabel = captureState.charAt(0).toUpperCase() + captureState.slice(1);
-  const contextLabel = promptLabel ? 'VOICE ANSWER' : projectName ? 'PROJECT CAPTURE' : 'VOICE CAPTURE';
-  const focalMessage = captureState === 'processing'
-    ? 'Pulling the capture into shape.'
-    : captureState === 'recording'
-      ? displayedSignal?.text || 'Stay with the thought until it lands.'
-      : captureState === 'listening'
-        ? 'Paused and ready when you want to continue.'
-        : 'Tap the mic when the thought is ready.';
-  const footerCue = captureState === 'processing'
-    ? 'Processing your capture.'
-    : displayedSignal?.text || liveSummary;
+  const statusPills = [
+    agentPlaybackState === 'blocked'
+      ? { key: 'playback-blocked', label: 'Voice ready to play', tone: 'muted' as const }
+      : null,
+    agentPlaybackState === 'error'
+      ? { key: 'playback-error', label: 'Voice playback failed', tone: 'muted' as const }
+      : null,
+    hasSession && !isMicMuted && !isAgentMuted && !isAgentSpeaking && !isLiveThinking
+      ? { key: 'listening', label: 'Listening...', tone: 'live' as const }
+      : null,
+    isMicMuted ? { key: 'mic-muted', label: 'Mic muted', tone: 'muted' as const } : null,
+    isAgentMuted ? { key: 'agent-muted', label: 'Agent voice off', tone: 'muted' as const } : null,
+    !isAgentMuted && isAgentSpeaking ? { key: 'agent-speaking', label: 'Agent speaking', tone: 'live' as const } : null,
+    !isMicMuted && !isAgentSpeaking && (isLiveThinking || agentPlaybackState === 'generating') ? { key: 'agent-thinking', label: 'Thinking...', tone: 'live' as const } : null,
+  ].filter((pill): pill is { key: string; label: string; tone: 'muted' | 'live' } => Boolean(pill));
+  const statusIndicator = !hasSession
+    ? 'Tap to start'
+    : isAgentSpeaking
+      ? 'Speaking...'
+      : (isLiveThinking || agentPlaybackState === 'generating')
+        ? 'Thinking...'
+        : 'Listening...';
 
   useSpeechRecognitionEvent('start', () => {
     speechRecognitionActiveRef.current = true;
@@ -947,7 +1547,7 @@ export function RecordingScreen({ navigation, route }: Props) {
 
   useSpeechRecognitionEvent('audioend', () => {
     speechRecognitionActiveRef.current = false;
-    if (!isRecording) setMeter01(0);
+    if (!isRecording) updateMeter(0, { force: true });
   });
 
   useSpeechRecognitionEvent('end', () => {
@@ -971,7 +1571,6 @@ export function RecordingScreen({ navigation, route }: Props) {
       passiveCommandModeRef.current = false;
       void stopSpeechRecognitionSession();
       triggerSoftFeedback();
-      setToastMessage('Hands-free start heard. Recording now.');
       setTimeout(() => {
         void startRecording().finally(() => {
           commandLockRef.current = false;
@@ -983,7 +1582,6 @@ export function RecordingScreen({ navigation, route }: Props) {
     if (command === 'stop' && isRecording && !commandLockRef.current) {
       commandLockRef.current = true;
       triggerMediumFeedback();
-      setToastMessage('Hands-free stop heard. Wrapping the capture.');
       void stopRecording().finally(() => {
         commandLockRef.current = false;
       });
@@ -993,14 +1591,15 @@ export function RecordingScreen({ navigation, route }: Props) {
     if (passiveCommandModeRef.current) return;
 
     markHeard(event.isFinal ? 0.7 : 0.54);
+    setLastHeardSnippet(takeLastWords(`${transcriptTallyRef.current} ${transcript}`.trim(), 12));
 
     if (event.isFinal) {
       transcriptTallyRef.current = `${transcriptTallyRef.current} ${transcript}`.trim();
-      setLiveTranscript(transcriptTallyRef.current);
+      queueLiveTranscript(transcriptTallyRef.current, { immediate: true });
       return;
     }
 
-    setLiveTranscript(`${transcriptTallyRef.current} ${transcript}`.trim());
+    queueLiveTranscript(`${transcriptTallyRef.current} ${transcript}`.trim());
   });
 
   useSpeechRecognitionEvent('error', (event) => {
@@ -1024,7 +1623,7 @@ export function RecordingScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     if (!error) return;
-    if (isIgnorableSpeechMessage(error)) {
+    if (isIgnorableSpeechMessage(error) || isSpeechRequestConflictError(error)) {
       setError(null);
       return;
     }
@@ -1034,7 +1633,7 @@ export function RecordingScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     if (!liveSignalError) return;
-    if (isIgnorableSpeechMessage(liveSignalError)) {
+    if (isIgnorableSpeechMessage(liveSignalError) || isSpeechRequestConflictError(liveSignalError)) {
       setLiveSignalError(null);
       return;
     }
@@ -1042,133 +1641,96 @@ export function RecordingScreen({ navigation, route }: Props) {
     setLiveSignalError(null);
   }, [liveSignalError]);
 
-  function pushSignal(signal: DisplayedSignal) {
-    setLiveSignals((current) => {
-      const next = [signal, ...current.filter((item) => item.text !== signal.text)];
-      return next.slice(0, 3);
-    });
-  }
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (!latestLiveSignal) {
-      setDisplayedSignal(null);
-      signalSwap.setValue(1);
+    if ((!recording && !isWeb) || !isRecording || isMicMuted || isAgentMuted || isAgentSpeaking) {
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      windup.stopAnimation();
+      windup.setValue(0);
       return;
     }
 
-    if (!displayedSignal) {
-      setDisplayedSignal(latestLiveSignal);
-      signalSwap.setValue(1);
+    const wordCount = wordsIn(analysisTranscript);
+    if (wordCount < replyWordThreshold) {
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      windup.stopAnimation();
+      windup.setValue(0);
       return;
     }
 
-    if (displayedSignal.text === latestLiveSignal.text && displayedSignal.kind === latestLiveSignal.kind) return;
+    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+    liveVoiceAbortRef.current?.abort();
+    liveVoiceAbortRef.current = null;
+    agentPlaybackAbortRef.current?.abort();
+    agentPlaybackAbortRef.current = null;
 
-    Animated.sequence([
-      Animated.timing(signalSwap, { toValue: 0, duration: 140, useNativeDriver: true }),
-      Animated.timing(signalSwap, { toValue: 0, duration: 1, useNativeDriver: true }),
-    ]).start(() => {
-      setDisplayedSignal(latestLiveSignal);
-      Animated.timing(signalSwap, { toValue: 1, duration: 180, useNativeDriver: true }).start();
-    });
-  }, [displayedSignal, latestLiveSignal, signalSwap]);
+    windup.stopAnimation();
+    windup.setValue(0);
+    Animated.timing(windup, {
+      toValue: 1,
+      duration: replySilenceDelayMs,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
 
-  useEffect(() => {
-    if ((!recording && !isWeb) || !isRecording) return;
+    silenceTimeoutRef.current = setTimeout(() => {
+      if (speechTransitionRef.current || isAgentMuted || isMicMuted) return;
+      if (Date.now() - lastApiSignalAtRef.current < replyCooldownMs) return;
 
-    const nextStep = elapsedSec >= 90 ? 3 : elapsedSec >= 45 ? 2 : elapsedSec >= 20 ? 1 : 0;
-    if (!nextStep || nextStep <= lastGuideStepRef.current) return;
+      setIsLiveThinking(true);
+      setLiveSignalError(null);
 
-    if (wordsIn(liveTranscript) >= 18 && liveLane?.stability && liveLane.stability >= 0.42) return;
-    if (latestLiveSignal?.source === 'api') return;
+      const controller = new AbortController();
+      liveVoiceAbortRef.current = controller;
 
-    lastGuideStepRef.current = nextStep;
-    const cue = buildContextualGuideCue({ elapsedSec, lane: liveLane, latestSignal: latestLiveSignal, interviewState, questionPlan });
-    if (!cue) return;
-    if (cue.kind === 'question') {
-      recentQuestionCategoriesRef.current = [...recentQuestionCategoriesRef.current, questionPlan.category].slice(-4);
-    }
-    pushSignal(cue);
-  }, [elapsedSec, interviewState, isRecording, isWeb, latestLiveSignal, liveLane, liveTranscript, questionPlan, recording]);
+      analyzeLiveSessionVoice(
+        {
+          recentTranscript: takeLastWords(analysisTranscript, 140),
+          projectContext,
+        },
+        { baseUrl: state.settings.apiBaseUrlOverride, signal: controller.signal },
+      )
+        .then((result: any) => {
+          if (controller.signal.aborted) return;
+          if (!result.ok) {
+            setLiveSignalError(result.error);
+            return;
+          }
 
-  useEffect(() => {
-    if ((!recording && !isWeb) || !isRecording) return;
+          lastApiSignalAtRef.current = Date.now();
+          
+          setAnalysisTranscript('');
+          setLiveTranscript('');
+          liveTranscriptRef.current = '';
+          transcriptTallyRef.current = '';
 
-    const wordCount = wordsIn(liveTranscript);
-    const stability = liveLane?.stability ?? 0;
-    const enoughContext = wordCount >= (stability >= 0.62 ? 26 : 38);
-    if (!enoughContext) return;
-    const requiredDelta = stability >= 0.66 ? 22 : 34;
-    if (wordCount - lastLiveWordCountRef.current < requiredDelta) return;
-    if (Date.now() - lastApiSignalAtRef.current < 12000) return;
-    if (stability < 0.36 && wordCount < 56) return;
-    if (latestLiveSignal?.kind === 'question' && Date.now() - lastQuestionAtRef.current < 18000) return;
+          void playAgentResponse(result.speechResponse || '');
+        })
+        .catch((e: any) => {
+          if (controller.signal.aborted || isIgnorableSpeechMessage(e)) return;
+          setLiveSignalError(e?.message || 'Voice mode failed.');
+        })
+        .finally(() => {
+          if (liveVoiceAbortRef.current === controller) {
+            liveVoiceAbortRef.current = null;
+          }
+          setIsLiveThinking(false);
+          windup.stopAnimation();
+          windup.setValue(0);
+        });
+    }, replySilenceDelayMs);
 
-    lastLiveWordCountRef.current = wordCount;
-    setIsLiveThinking(true);
-    setLiveSignalError(null);
-
-    const questioningMode = stability < 0.4 ? 'listen' : questionPlan.category === 'clarifying' ? 'clarify' : questionPlan.category === 'structural' && elapsedSec >= 80 ? 'land' : 'probe';
-    const laneObjective = liveLane?.label
-      ? `Stay inside the user's dominant lane: ${liveLane.label}. Ask a follow-up only if it clearly deepens that same lane.`
-      : 'Listen for the emerging theme and avoid premature questioning.';
-
-    analyzeLiveSession(
-      {
-        recentTranscript: takeLastWords(liveTranscript, 140),
-        runningSummary: liveSummary,
-        recentTakeaways: liveTakeaways,
-        priorSignals: liveSignals.map((item) => ({ kind: item.kind, text: item.text })),
-        objective: `${laneObjective} Every question must move the project forward by clarifying intent, expanding concrete detail, or strengthening structure. Prefer coherence over novelty. Help the user become more articulate by drawing out one deeper layer at a time. If the theme is still forming, reflect briefly and keep listening.`,
-        mode: project?.type === 'book' ? 'book' : projectId ? 'project' : 'free-think',
-        questioningMode,
-        detectedLane: liveLane ? { label: liveLane.label, supportingPhrases: liveLane.supportingPhrases, stability: liveLane.stability } : undefined,
-        interviewState,
-        projectContext,
-        questionPlan,
-      },
-      { baseUrl: state.settings.apiBaseUrlOverride },
-    )
-      .then((result) => {
-        if (!result.ok) {
-          setLiveSignalError(result.error);
-          return;
-        }
-
-        setLiveSummary(result.summary);
-        setLiveTakeaways(result.takeaways);
-        lastApiSignalAtRef.current = Date.now();
-        if (result.signal.kind === 'question') {
-          lastQuestionAtRef.current = Date.now();
-          const acceptedCategory = result.signal.questionCategory ?? questionPlan.category;
-          recentQuestionCategoriesRef.current = [...recentQuestionCategoriesRef.current, acceptedCategory].slice(-4);
-        }
-
-        if (questioningMode === 'listen' && result.signal.kind === 'question') {
-          const cue = buildContextualGuideCue({ elapsedSec, lane: liveLane, latestSignal: latestLiveSignal, interviewState, questionPlan });
-          if (cue) pushSignal(cue);
-          return;
-        }
-
-        if (!shouldAcceptProjectQuestion({ signal: result.signal, questionPlan })) {
-          recentQuestionCategoriesRef.current = [...recentQuestionCategoriesRef.current, questionPlan.category].slice(-4);
-          pushSignal({
-            kind: 'question',
-            text: buildProjectForwardQuestion({ questionPlan }),
-            confidence: 'medium',
-            questionCategory: questionPlan.category,
-            advancesProjectBy: questionPlan.goal,
-            source: 'guide',
-            createdAt: Date.now(),
-          });
-          return;
-        }
-
-        pushSignal({ ...result.signal, source: 'api', createdAt: Date.now() });
-      })
-      .catch((e: any) => setLiveSignalError(e?.message || 'Live cue failed'))
-      .finally(() => setIsLiveThinking(false));
-  }, [elapsedSec, interviewState, isRecording, isWeb, latestLiveSignal, liveLane, liveSignals, liveSummary, liveTakeaways, liveTranscript, project?.type, projectContext, projectId, questionPlan, recording, state.settings.apiBaseUrlOverride]);
+    return () => {
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = null;
+      }
+      windup.stopAnimation();
+      windup.setValue(0);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisTranscript, isRecording, recording, isWeb, projectContext, isAgentMuted, isAgentSpeaking, isMicMuted, replyCooldownMs, replySilenceDelayMs, replyWordThreshold, state.settings.apiBaseUrlOverride, windup]);
 
   async function startRecording() {
     if (!isReady || recording || isStarting || isStopping) return;
@@ -1177,20 +1739,28 @@ export function RecordingScreen({ navigation, route }: Props) {
     setError(null);
     setIsStarting(true);
     setElapsedSec(0);
-    setMeter01(0);
-    setLiveSignals([]);
+    updateMeter(0, { force: true });
+    hasPlayedStartIntroRef.current = false;
+    liveTranscriptRef.current = '';
+    setHasCapturedSpeech(false);
+    setLastHeardSnippet('');
+    setLastAgentReply('');
+    setAgentPlaybackState('idle');
     setLiveTranscript('');
-    setLiveSummary('');
-    setLiveTakeaways([]);
+    setAnalysisTranscript('');
     setLiveSignalError(null);
-    setDisplayedSignal(null);
-    lastGuideStepRef.current = 0;
-    lastLiveWordCountRef.current = 0;
     lastApiSignalAtRef.current = 0;
-    lastQuestionAtRef.current = 0;
-    recentQuestionCategoriesRef.current = [];
     transcriptTallyRef.current = '';
+    if (transcriptFlushTimeoutRef.current) {
+      clearTimeout(transcriptFlushTimeoutRef.current);
+      transcriptFlushTimeoutRef.current = null;
+    }
+    if (analysisTranscriptTimeoutRef.current) {
+      clearTimeout(analysisTranscriptTimeoutRef.current);
+      analysisTranscriptTimeoutRef.current = null;
+    }
     try {
+      await primeAgentAudioOutput();
       await stopSpeechRecognitionSession();
 
       const recognitionGranted = await requestSpeechPermissionIfNeeded();
@@ -1202,10 +1772,10 @@ export function RecordingScreen({ navigation, route }: Props) {
 
       if (isWeb) {
         await startSpeechRecognitionSession();
+        setIsMicMuted(false);
         setIsRecording(true);
         triggerMediumFeedback();
-        setToastMessage('Recording live.');
-        void playFeedbackSound('record-start');
+        void playStartIntro();
         return;
       }
 
@@ -1223,7 +1793,7 @@ export function RecordingScreen({ navigation, route }: Props) {
           const db = typeof s?.metering === 'number' ? s.metering : null;
           if (typeof db === 'number') {
             const v = Math.max(0, Math.min(1, (db + 60) / 60));
-            setMeter01(v);
+            updateMeter(v);
           }
         },
         250,
@@ -1234,10 +1804,13 @@ export function RecordingScreen({ navigation, route }: Props) {
 
       const liveSpeechStarted = await startSpeechRecognitionSession({ allowBusyFailure: true, disableLiveOnFailure: true });
 
+      setIsMicMuted(false);
       setIsRecording(true);
       triggerMediumFeedback();
-      setToastMessage(liveSpeechStarted ? 'Recording live.' : 'Recording live. Live cues are temporarily unavailable on this device.');
-      void playFeedbackSound('record-start');
+      if (!liveSpeechStarted) {
+        liveSpeechDisabledRef.current = true;
+      }
+      void playStartIntro();
     } catch (e: any) {
       speechShouldRunRef.current = false;
       setError(e?.message || 'Recording failed to start');
@@ -1260,10 +1833,7 @@ export function RecordingScreen({ navigation, route }: Props) {
         if (recording) await recording.startAsync();
         if (!liveSpeechDisabledRef.current) {
           speechShouldRunRef.current = true;
-          const restarted = await startSpeechRecognitionSession({ allowBusyFailure: true, disableLiveOnFailure: true });
-          if (!restarted) {
-            setToastMessage('Recording resumed. Live cues are temporarily unavailable on this device.');
-          }
+          await startSpeechRecognitionSession({ allowBusyFailure: true, disableLiveOnFailure: true });
         } else {
           speechShouldRunRef.current = false;
         }
@@ -1282,9 +1852,14 @@ export function RecordingScreen({ navigation, route }: Props) {
     setError(null);
     setIsStopping(true);
     try {
+      liveVoiceAbortRef.current?.abort();
+      liveVoiceAbortRef.current = null;
+      await unloadAgentSound();
+      setIsAgentSpeaking(false);
       speechShouldRunRef.current = false;
       await stopSpeechRecognitionSession();
-      const recognizedTranscript = liveTranscript.trim();
+      flushLiveTranscript({ immediate: true });
+      const recognizedTranscript = liveTranscriptRef.current.trim();
       const durationSec = Math.max(elapsedSec, estimateVoiceDurationSecFromTranscript(recognizedTranscript));
       setIsRecording(false);
       triggerMediumFeedback();
@@ -1327,6 +1902,14 @@ export function RecordingScreen({ navigation, route }: Props) {
             title: workingTitle,
             transcript: recognizedTranscript,
             intent: recordingIntent,
+            captureContext,
+            contextAnchor: {
+              projectId,
+              projectName: project?.name,
+              draftId,
+              draftTitle: draftId ? state.drafts[draftId]?.title : undefined,
+            },
+            projectProfiles,
             voice,
           },
           { baseUrl: state.settings.apiBaseUrlOverride },
@@ -1342,8 +1925,13 @@ export function RecordingScreen({ navigation, route }: Props) {
               highlights: result.highlights,
               themes: result.themes,
               ideas: result.ideas,
+              captureContext: result.captureContext ?? captureContext,
+              decision: result.decision,
             },
           });
+          if (!projectId && result.decision?.autoAssigned && result.decision.primaryProjectId) {
+            dispatch({ type: 'project.addEntry', payload: { projectId: result.decision.primaryProjectId, entryId } });
+          }
           celebrateCapture();
             if (targetProperty && project?.type === 'book' && projectId) {
               const field = targetProperty.split('.')[1];
@@ -1432,6 +2020,14 @@ export function RecordingScreen({ navigation, route }: Props) {
               title: workingTitle,
               transcript: recognizedTranscript,
               intent: recordingIntent,
+              captureContext,
+              contextAnchor: {
+                projectId,
+                projectName: project?.name,
+                draftId,
+                draftTitle: draftId ? state.drafts[draftId]?.title : undefined,
+              },
+              projectProfiles,
               voice,
               audio: {
                 base64,
@@ -1452,8 +2048,13 @@ export function RecordingScreen({ navigation, route }: Props) {
                 highlights: result.highlights,
                 themes: result.themes,
                 ideas: result.ideas,
+                captureContext: result.captureContext ?? captureContext,
+                decision: result.decision,
               },
             });
+            if (!projectId && result.decision?.autoAssigned && result.decision.primaryProjectId) {
+              dispatch({ type: 'project.addEntry', payload: { projectId: result.decision.primaryProjectId, entryId } });
+            }
             celebrateCapture();
             if (targetProperty && project?.type === 'book' && projectId) {
               const field = targetProperty.split('.')[1];
@@ -1507,215 +2108,220 @@ export function RecordingScreen({ navigation, route }: Props) {
     <ScreenLayout title="" headerShown={false} contentPaddingTop={0}>
       <View style={styles.screen}>
         <Toast message={toastMessage} tone="danger" onHide={() => setToastMessage(null)} />
-        <View
-          pointerEvents="none"
-          style={[
-            styles.backdropPlanePrimary,
-            {
-              width: visualSize * 1.06,
-              height: visualSize * 1.82,
-              top: metrics.headerTopGap + 84,
-              left: -visualSize * 0.24,
-              transform: [{ rotate: '-10deg' }],
-            },
-          ]}
-        />
-        <View
-          pointerEvents="none"
-          style={[
-            styles.backdropPlaneSecondary,
-            {
-              width: visualSize * 0.92,
-              height: visualSize * 1.18,
-              bottom: metrics.bottomControlHeight + 36,
-              right: -visualSize * 0.3,
-              transform: [{ rotate: '11deg' }],
-            },
-          ]}
-        />
-        <View
-          pointerEvents="none"
-          style={[
-            styles.backdropRule,
-            {
-              height: visualSize * 1.24,
-              top: metrics.headerTopGap + 118,
-              left: metrics.horizontalFrame + visualSize * 0.28,
-            },
-          ]}
-        />
 
-        <View
-          style={[
-            styles.stage,
-            {
-              paddingTop: metrics.headerTopGap,
-              paddingBottom: Math.max(metrics.stackGap, tokens.space[24]),
-              paddingHorizontal: metrics.horizontalFrame,
-            },
-          ]}
-        >
-          <View style={[styles.header, { minHeight: metrics.headerMinHeight }]}> 
-            <Pressable accessibilityRole="button" onPress={() => navigation.goBack()} style={styles.chromeButton}>
-              <Ionicons name="close" size={18} color={tokens.color.textMuted} />
-            </Pressable>
+        <View style={styles.topBar}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={hasSession ? 'Finish voice session' : 'Exit voice mode'}
+            onPress={() => {
+              void handleExit();
+            }}
+            disabled={isStarting || isStopping}
+            style={({ pressed }) => [
+              styles.chromeButton,
+              pressed ? styles.chromeButtonPressed : null,
+              isStarting || isStopping ? styles.micTapTargetDisabled : null,
+            ]}
+          >
+            <Ionicons name={hasSession ? 'checkmark' : 'close'} size={20} color={tokens.color.text} />
+          </Pressable>
 
-            <View style={styles.timeCluster}>
-              <Text style={styles.timeValue}>{formatTime(elapsedSec)}</Text>
-              <Text numberOfLines={1} style={styles.timeSubvalue}>{sessionTitle}</Text>
-            </View>
-
-            <View style={styles.headerSpacer} />
-          </View>
-
-          <View style={styles.hero}>
-            <View style={styles.heroCenter}>
-              <View style={styles.contextPill}>
-                <Text style={styles.contextPillText}>{contextLabel}</Text>
-              </View>
-              {captureContextTitle ? (
-                <View style={styles.captureContextCard}>
-                  <Text style={styles.captureContextTitle}>{captureContextTitle}</Text>
-                  {captureContextNote ? <Text style={styles.captureContextNote}>{captureContextNote}</Text> : null}
-                </View>
-              ) : null}
-
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.micHalo,
-                  {
-                    width: visualSize * 1.38,
-                    height: visualSize * 1.38,
-                    borderRadius: visualSize,
-                    opacity: captureState === 'recording' ? 0.22 : captureState === 'processing' ? 0.18 : captureState === 'listening' ? 0.12 : 0.08,
-                    transform: [{ scale: captureState === 'recording' ? ringScale : 1 }],
-                  },
-                ]}
-              />
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.micHaloHot,
-                  {
-                    width: visualSize * 0.96,
-                    height: visualSize * 0.96,
-                    borderRadius: visualSize,
-                    opacity: captureState === 'recording' ? ringOpacity : captureState === 'processing' ? 0.16 : 0,
-                    transform: [{ scale: captureState === 'recording' ? ringScale : 1 }],
-                  },
-                ]}
-              />
-
+          <View style={styles.topBarActions}>
+            {hasSession ? (
               <Pressable
                 accessibilityRole="button"
+                accessibilityLabel="Cancel and discard recording"
+                onPress={() => {
+                  void handleDiscard();
+                }}
                 disabled={isStarting || isStopping}
-                onPress={hasSession ? togglePause : startRecording}
-                style={styles.micTapTarget}
-              >
-                <Animated.View
-                  style={{
-                    transform: [{ scale: captureState === 'processing' ? 1 : coreScale }],
-                  }}
-                >
-                  <ScribbleMic
-                    size={visualSize}
-                    iconSize={Math.max(44, Math.round(visualSize * 0.2))}
-                    aggressive={captureState === 'recording' || captureState === 'processing'}
-                    auraColor={captureState === 'processing' ? '#ff6b47' : '#ff5a36'}
-                    orbitalColor={captureState === 'recording' || captureState === 'processing' ? tokens.color.brand : tokens.color.text}
-                    coreBackgroundColor={
-                      captureState === 'processing'
-                        ? '#0f0f10'
-                        : captureState === 'recording'
-                          ? '#111111'
-                          : captureState === 'listening'
-                            ? '#141414'
-                            : '#161616'
-                    }
-                    coreBorderColor={
-                      captureState === 'recording'
-                        ? 'rgba(255, 106, 61, 0.72)'
-                        : captureState === 'processing'
-                          ? 'rgba(255, 106, 61, 0.62)'
-                          : 'rgba(255, 106, 61, 0.34)'
-                    }
-                    coreShadowColor={captureState === 'processing' ? '#ff6b47' : '#ff5a36'}
-                    iconColor={
-                      captureState === 'recording'
-                        ? '#ff6b47'
-                        : captureState === 'processing'
-                          ? '#ff7f5f'
-                          : 'rgba(255,255,255,0.94)'
-                    }
-                  />
-                </Animated.View>
-              </Pressable>
-
-              {captureState === 'idle' ? null : <Text style={[styles.stateTitle, captureState === 'recording' ? styles.stateTitleRecording : null]}>{captureStateLabel}</Text>}
-              <Text numberOfLines={2} style={[styles.stageLine, captureState === 'recording' ? styles.stageLineRecording : null]}>{focalMessage}</Text>
-            </View>
-          </View>
-
-          <View style={styles.footer}>
-            {(hasSession || displayMeter01 > 0.02) ? (
-              <View style={styles.meterShell}>
-                <View style={styles.meterHeader}>
-                  <Text style={styles.meterLabel}>Input</Text>
-                  <Text style={styles.meterValue}>{captureState === 'processing' ? 'Processing' : micStatusText}</Text>
-                </View>
-                <View style={styles.meterTrack}>
-                  <View style={[styles.meterFill, { width: `${Math.max(8, Math.round(displayMeter01 * 100))}%` }]} />
-                </View>
-              </View>
-            ) : null}
-
-            {(captureState === 'recording' || captureState === 'processing') && footerCue ? (
-              <Animated.View
-                style={[
-                  styles.cueCard,
-                  {
-                    opacity: signalSwap,
-                    transform: [
-                      {
-                        translateY: signalSwap.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [6, 0],
-                        }),
-                      },
-                    ],
-                  },
+                style={({ pressed }) => [
+                  styles.chromeButton,
+                  pressed ? styles.chromeButtonPressed : null,
+                  isStarting || isStopping ? styles.micTapTargetDisabled : null,
                 ]}
               >
-                <Text style={styles.cueEyebrow}>{captureState === 'processing' ? 'Processing' : displayedSignal ? signalLabel(displayedSignal.kind) : 'Capture'}</Text>
-                <Text numberOfLines={2} style={styles.cueText}>{footerCue}</Text>
+                <Ionicons name="trash-outline" size={18} color={tokens.color.danger} />
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isMicMuted ? 'Unmute microphone' : 'Mute microphone'}
+              onPress={() => {
+                if (hasSession) {
+                  void toggleMicMute();
+                }
+              }}
+              disabled={!hasSession || isStarting || isStopping}
+              style={({ pressed }) => [
+                styles.chromeButton,
+                isMicMuted ? styles.chromeButtonActive : null,
+                pressed ? styles.chromeButtonPressed : null,
+                !hasSession || isStarting || isStopping ? styles.micTapTargetDisabled : null,
+              ]}
+            >
+              <Ionicons name={isMicMuted ? 'mic-off' : 'mic'} size={18} color={isMicMuted ? tokens.color.surface : tokens.color.text} />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isAgentMuted ? 'Unmute agent voice' : 'Mute agent voice'}
+              onPress={() => {
+                void toggleAgentMute();
+              }}
+              disabled={isStarting || isStopping}
+              style={({ pressed }) => [
+                styles.chromeButton,
+                isAgentMuted ? styles.chromeButtonActive : null,
+                pressed ? styles.chromeButtonPressed : null,
+                isStarting || isStopping ? styles.micTapTargetDisabled : null,
+              ]}
+            >
+              <Ionicons name={isAgentMuted ? 'volume-mute' : 'volume-high'} size={18} color={isAgentMuted ? tokens.color.surface : tokens.color.text} />
+            </Pressable>
+          </View>
+        </View>
+
+        {statusPills.length ? (
+          <View pointerEvents="none" style={styles.statusRail}>
+            {statusPills.map((pill) => (
+              <View
+                key={pill.key}
+                style={[
+                  styles.statusPill,
+                  pill.tone === 'live' ? styles.statusPillLive : styles.statusPillMuted,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.statusPillDot,
+                    pill.tone === 'live' ? styles.statusPillDotLive : styles.statusPillDotMuted,
+                  ]}
+                />
+                <Animated.Text style={styles.statusPillText}>{pill.label}</Animated.Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        <View style={styles.hero}>
+          <View style={styles.heroCenter}>
+            <View style={[styles.captureContextCard, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
+              {statusIndicator === 'Thinking...' ? (
+                <>
+                  <ActivityIndicator size="small" color={tokens.color.textMuted} />
+                  <Animated.Text style={styles.captureContextTitle}>Thinking...</Animated.Text>
+                </>
+              ) : (
+                <Animated.Text style={styles.captureContextTitle}>{statusIndicator}</Animated.Text>
+              )}
+            </View>
+
+            {promptLabel ? (
+              <View style={styles.promptContextCard}>
+                <Text style={styles.promptContextEyebrow}>Prompt in play</Text>
+                <Text style={styles.promptContextTitle}>{promptLabel}</Text>
+              </View>
+            ) : null}
+
+            {lastAgentReply && (agentPlaybackState === 'blocked' || agentPlaybackState === 'error') ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Play the last voice reply"
+                onPress={() => {
+                  void replayLastAgentVoice();
+                }}
+                style={({ pressed }) => [
+                  styles.replayPill,
+                  pressed ? styles.replayPillPressed : null,
+                ]}
+              >
+                <Ionicons name={agentPlaybackState === 'blocked' ? 'play-circle-outline' : 'refresh-circle-outline'} size={16} color={tokens.color.brand} />
+                <Text style={styles.replayPillText}>{agentPlaybackState === 'blocked' ? 'Play reply aloud' : 'Try voice again'}</Text>
+              </Pressable>
+            ) : null}
+
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.micHalo,
+                {
+                  width: visualSize * 1.82,
+                  height: visualSize * 1.82,
+                  borderRadius: visualSize,
+                  opacity: ringOpacity,
+                  transform: [{ scale: ringScale }],
+                  backgroundColor: 'rgba(255, 90, 54, 0.14)',
+                },
+              ]}
+            />
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.micHalo,
+                {
+                  width: visualSize * 1.62,
+                  height: visualSize * 1.62,
+                  borderRadius: visualSize,
+                  opacity: windup.interpolate({ inputRange: [0, 1], outputRange: [0, 0.18], extrapolate: 'clamp' }),
+                  transform: [{ scale: windup.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.08], extrapolate: 'clamp' }) }],
+                  backgroundColor: 'rgba(255, 90, 54, 0.22)',
+                },
+              ]}
+            />
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.micHaloHot,
+                {
+                  width: visualSize * 1.12,
+                  height: visualSize * 1.12,
+                  borderRadius: visualSize,
+                  opacity: level.interpolate({ inputRange: [0, 1], outputRange: [0, 0.5], extrapolate: 'clamp' }),
+                  backgroundColor: 'rgba(255, 90, 54, 0.28)',
+                },
+              ]}
+            />
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                if (hasSession) {
+                  void toggleMicMute();
+                  return;
+                }
+
+                void startRecording();
+              }}
+              disabled={isStarting || isStopping || (captureState === 'processing' && !recording)}
+              style={({ pressed }) => [
+                styles.micTapTarget,
+                pressed && !(isStarting || isStopping) ? styles.micTapTargetPressed : null,
+                isStarting || isStopping ? styles.micTapTargetDisabled : null,
+              ]}
+            >
+              <Animated.View
+                style={{
+                  transform: [{ scale: captureState === 'recording' ? coreScale : 1 }],
+                }}
+              >
+                <ScribbleMic
+                  size={visualSize * 0.9}
+                  iconSize={Math.max(48, visualSize * 0.24)}
+                  aggressive
+                  iconColor={
+                    isMicMuted
+                      ? 'rgba(255,255,255,0.52)'
+                      : captureState === 'processing'
+                        ? '#ff7f5f'
+                        : tokens.color.brand
+                  }
+                  coreBackgroundColor="#141414"
+                  coreBorderColor={isMicMuted ? 'rgba(255,255,255,0.2)' : 'rgba(255, 90, 54, 0.58)'}
+                />
               </Animated.View>
-            ) : null}
-
-            {!hasSession ? (
-              <View style={styles.idleHint}>
-                <Ionicons name="radio-outline" size={14} color={tokens.color.textFaint} />
-                <Text numberOfLines={1} style={styles.idleHintText}>{handsFreeHint}</Text>
-              </View>
-            ) : !isStopping ? (
-              <View style={styles.actionRow}>
-                <Pressable style={styles.discardButton} disabled={isStarting || isStopping} onPress={() => navigation.goBack()}>
-                  <Text style={styles.discardText}>Discard</Text>
-                </Pressable>
-
-                <LinearGradient
-                  colors={['rgba(255, 90, 54, 0.9)', 'rgba(255, 90, 54, 0.38)']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.finishRing}
-                >
-                  <Pressable style={styles.finishButton} disabled={isStopping} onPress={stopRecording}>
-                    <Ionicons name="sparkles" size={16} color={tokens.color.surface} />
-                    <Text style={styles.finishText}>Finish capture</Text>
-                  </Pressable>
-                </LinearGradient>
-              </View>
-            ) : null}
+            </Pressable>
           </View>
         </View>
       </View>
@@ -1761,6 +2367,66 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-start',
   },
+  topBar: {
+    position: 'absolute',
+    top: tokens.space[20],
+    left: tokens.space[16],
+    right: tokens.space[16],
+    zIndex: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  topBarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tokens.space[12],
+  },
+  statusRail: {
+    position: 'absolute',
+    top: 72,
+    left: tokens.space[16],
+    right: tokens.space[16],
+    zIndex: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: tokens.space[8],
+    flexWrap: 'wrap',
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tokens.space[8],
+    paddingHorizontal: tokens.space[12],
+    paddingVertical: tokens.space[8],
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusPillLive: {
+    backgroundColor: 'rgba(255, 90, 54, 0.14)',
+    borderColor: 'rgba(255, 90, 54, 0.28)',
+  },
+  statusPillMuted: {
+    backgroundColor: 'rgba(17,17,17,0.06)',
+    borderColor: 'rgba(17,17,17,0.08)',
+  },
+  statusPillDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  statusPillDotLive: {
+    backgroundColor: tokens.color.brand,
+  },
+  statusPillDotMuted: {
+    backgroundColor: 'rgba(17,17,17,0.42)',
+  },
+  statusPillText: {
+    fontSize: tokens.font.size[12],
+    fontWeight: tokens.font.weight.semibold,
+    color: tokens.color.text,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1776,6 +2442,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.84)',
     borderWidth: 1,
     borderColor: tokens.color.borderSubtle,
+  },
+  chromeButtonPressed: {
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderColor: tokens.color.textFaint,
+  },
+  chromeButtonActive: {
+    backgroundColor: tokens.color.brand,
+    borderColor: tokens.color.brand,
   },
   timeCluster: {
     flex: 1,
@@ -1825,24 +2499,66 @@ const styles = StyleSheet.create({
   },
   captureContextCard: {
     maxWidth: '82%',
-    paddingHorizontal: tokens.space[12],
-    paddingVertical: tokens.space[12],
-    borderRadius: tokens.radius[16],
-    backgroundColor: 'rgba(255,255,255,0.76)',
+    paddingHorizontal: tokens.space[16],
+    paddingVertical: tokens.space[8],
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.65)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 90, 54, 0.12)',
-    gap: tokens.space[4],
+    borderColor: 'rgba(255, 90, 54, 0.08)',
   },
   captureContextTitle: {
     fontSize: tokens.font.size[12],
-    color: tokens.color.text,
-    fontWeight: tokens.font.weight.semibold,
+    color: tokens.color.textMuted,
+    fontWeight: tokens.font.weight.medium,
+    letterSpacing: 0.5,
     textAlign: 'center',
   },
-  captureContextNote: {
+  replayPill: {
+    marginTop: tokens.space[12],
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tokens.space[8],
+    paddingHorizontal: tokens.space[16],
+    paddingVertical: tokens.space[8],
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.84)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 90, 54, 0.12)',
+  },
+  replayPillPressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.985 }],
+  },
+  replayPillText: {
     fontSize: tokens.font.size[12],
-    color: tokens.color.textMuted,
-    lineHeight: 18,
+    color: tokens.color.text,
+    fontWeight: tokens.font.weight.medium,
+    letterSpacing: 0.2,
+  },
+  promptContextCard: {
+    marginTop: tokens.space[12],
+    maxWidth: '86%',
+    paddingHorizontal: tokens.space[16],
+    paddingVertical: tokens.space[12],
+    borderRadius: tokens.radius[16],
+    backgroundColor: 'rgba(255,255,255,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 90, 54, 0.1)',
+    gap: tokens.space[4],
+  },
+  promptContextEyebrow: {
+    fontSize: tokens.font.size[10],
+    fontWeight: tokens.font.weight.bold,
+    letterSpacing: 0.9,
+    textTransform: 'uppercase',
+    color: tokens.color.textFaint,
+    textAlign: 'center',
+  },
+  promptContextTitle: {
+    fontSize: tokens.font.size[14],
+    lineHeight: 20,
+    fontWeight: tokens.font.weight.medium,
+    color: tokens.color.text,
     textAlign: 'center',
   },
   micHalo: {
@@ -1858,6 +2574,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minWidth: 44,
     minHeight: 44,
+  },
+  micTapTargetPressed: {
+    transform: [{ scale: 0.985 }],
+  },
+  micTapTargetDisabled: {
+    opacity: 0.6,
   },
   stateTitle: {
     fontSize: tokens.font.size[28],
@@ -1969,6 +2691,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: tokens.color.borderSubtle,
   },
+  discardButtonPressed: {
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderColor: tokens.color.textFaint,
+  },
+  discardButtonDisabled: {
+    opacity: 0.58,
+  },
   discardText: {
     fontSize: tokens.font.size[14],
     color: tokens.color.textMuted,
@@ -1979,6 +2708,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     padding: 2,
   },
+  finishRingDisabled: {
+    opacity: 0.7,
+  },
   finishButton: {
     minHeight: 48,
     borderRadius: 999,
@@ -1987,6 +2719,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexDirection: 'row',
     gap: tokens.space[8],
+  },
+  finishButtonPressed: {
+    opacity: 0.96,
   },
   finishText: {
     fontSize: tokens.font.size[14],
